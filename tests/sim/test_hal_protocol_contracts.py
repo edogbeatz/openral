@@ -42,6 +42,7 @@ from openral_hal import (
     AnvilOpenArmV2MujocoHAL,
     FrankaPandaHAL,
     G1MujocoHAL,
+    Go2MujocoHAL,
     H1MujocoHAL,
     OpenArmMujocoHAL,
     Rizon4MujocoHAL,
@@ -68,6 +69,7 @@ _HAL_CLASSES = [
     SO100MujocoHAL,
     FrankaPandaHAL,
     G1MujocoHAL,
+    Go2MujocoHAL,
     H1MujocoHAL,
     AlohaMujocoHAL,
     Rizon4MujocoHAL,
@@ -80,9 +82,9 @@ _HAL_CLASSES = [
 
 def _make_hal(hal_class: type[HAL]) -> HAL:
     """Factory to instantiate each HAL with appropriate defaults."""
-    if issubclass(hal_class, (G1MujocoHAL, H1MujocoHAL)):
-        # Humanoids settle longer; gravity off so the free-standing floating base
-        # doesn't collapse during the settle steps and perturb the contract check.
+    if issubclass(hal_class, (G1MujocoHAL, H1MujocoHAL, Go2MujocoHAL)):
+        # Floating-base Unitree twins settle longer; gravity off so the
+        # free-standing base doesn't collapse (no gait / S0 cerebellum).
         return hal_class(gravity_enabled=False, settle_steps=1000)
     else:
         # Manipulators: gravity_enabled=False so position controllers converge exactly.

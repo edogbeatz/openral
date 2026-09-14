@@ -70,6 +70,7 @@ from openral_hal import (
     AlohaMujocoHAL,
     FrankaPandaHAL,
     G1MujocoHAL,
+    Go2MujocoHAL,
     H1MujocoHAL,
     SO100FollowerHAL,
     SO100MujocoHAL,
@@ -199,6 +200,10 @@ def _h1_factory() -> HAL:
     return H1MujocoHAL(gravity_enabled=False, settle_steps=10)
 
 
+def _go2_factory() -> HAL:
+    return Go2MujocoHAL(gravity_enabled=False, settle_steps=10)
+
+
 # ``(label, factory, n_joints, embodiment_tag)`` per HAL.  The label is
 # the pytest test id; the embodiment tag must match the description's
 # tags so a future ``rSkill.check_compatibility`` call upstream of the
@@ -213,6 +218,7 @@ _HAL_CASES: list[tuple[str, Callable[[], HAL], int, str]] = [
     ("aloha_bimanual", _aloha_factory, 14, "aloha"),
     ("g1", _g1_factory, 29, "g1"),
     ("h1", _h1_factory, 19, "h1"),
+    ("go2", _go2_factory, 12, "go2"),
 ]
 
 

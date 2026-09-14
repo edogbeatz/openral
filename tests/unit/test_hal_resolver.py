@@ -77,6 +77,19 @@ class TestSimMode:
         assert hal._settle_steps == 4  # type: ignore[attr-defined] # reason: sim-only introspection
         assert hal._gravity_enabled is False  # type: ignore[attr-defined] # reason: sim-only introspection
 
+    def test_go2_explicit_sim_subclass_threads_gravity_off(self) -> None:
+        """Go2 names ``Go2MujocoHAL`` and pins gravity off in the manifest.
+
+        Construction is lazy (menagerie clone happens at connect()), so
+        this pins the YAML ``hal.sim`` entrypoint + ``hal.parameters.defaults``
+        seam without network access.
+        """
+        from openral_hal.go2 import Go2MujocoHAL
+
+        hal = build_hal(_load("go2"), mode="sim")
+        assert isinstance(hal, Go2MujocoHAL)
+        assert hal._gravity_enabled is False  # type: ignore[attr-defined] # reason: sim-only introspection
+
 
 class TestRealMode:
     """``mode="real"`` builds the real-hardware HAL and threads ``transport``."""

@@ -41,6 +41,7 @@
 | `ros:openral_hal_franka` | 1 |
 | `ros:openral_hal_g1` | 1 |
 | `ros:openral_hal_h1` | 1 |
+| `ros:openral_hal_go2` | 1 |
 | `ros:openral_hal_rizon4` | 1 |
 | `ros:openral_hal_ur10e` | 1 |
 
