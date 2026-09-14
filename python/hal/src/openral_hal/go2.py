@@ -20,7 +20,7 @@ before ADR-0089.
 Joint inventory: the menagerie MJCF has 13 joints (12 actuated + 1
 floating base, not exposed on ``RobotDescription`` — implicit world
 state, not Skill-commanded) and 12 torque ``<motor>`` actuators in a
-fixed order (FL, FR, RL, RR × hip / thigh / calf). qpos addresses for
+fixed order (FL, FR, RL, RR x hip / thigh / calf). qpos addresses for
 the actuated joints are ``7..18``; actuator indices are ``0..11``,
 aligned 1:1 with that joint order.
 
@@ -30,7 +30,7 @@ PD position loop every ``mj_step`` — the same H1 / ``unitree_sdk2``
 pattern — so the public action contract stays "position targets in
 radians". Default qpos puts the calves at 0, which is **outside** the
 calf range ``[-2.7227, -0.83776]``; ``sim.keyframe_index: 0`` loads the
-menagerie ``home`` stand (thigh 0.9, calf −1.8).
+menagerie ``home`` stand (thigh 0.9, calf -1.8).
 
 The Go2 *model* in menagerie is BSD-3-Clause (Unitree); the menagerie
 repo and the ``mujoco`` Python package are Apache-2.0. Compatible
@@ -74,7 +74,7 @@ __all__ = ["GO2_DESCRIPTION", "GO2_HOME_JOINT_TARGETS", "Go2MujocoHAL"]
 
 
 # ── Canonical joint order ─────────────────────────────────────────────────────
-# Matches the menagerie MJCF actuator order (FL, FR, RL, RR × hip / thigh /
+# Matches the menagerie MJCF actuator order (FL, FR, RL, RR x hip / thigh /
 # calf) after google-deepmind/mujoco_menagerie#148. Verified at import time
 # by ``tests/sim/test_go2_hal_mujoco.py::TestMenagerieSchema``.
 
@@ -189,7 +189,7 @@ def _go2_joint_specs() -> list[JointSpec]:
 
 # Official Unitree Go2 URDF ``front_camera_joint`` origin on ``base``.
 # The menagerie MJCF ships no ``<camera>``; the generic HAL camera rig
-# splices this onto ``base``. Intrinsics are NOMINAL (same 640×480 /
+# splices this onto ``base``. Intrinsics are NOMINAL (same 640x480 /
 # fx=fy=343 pinhole G1 uses for its spliced head cam) — not a calibrated
 # Go2 lens. Run a checkerboard before this feeds SLAM / object-lift.
 _GO2_FRONT_CAMERA_POS: tuple[float, float, float] = (0.32715, -0.00003, 0.04297)
@@ -285,7 +285,7 @@ class Go2MujocoHAL(MujocoArmHAL):
     Drives the 12 actuated joints of the menagerie ``unitree_go2`` MJCF
     through a software PD loop over torque ``<motor>`` actuators. Exposes
     a 12-D ``openral_core.Action`` matching ``GO2_DESCRIPTION`` (FL, FR,
-    RL, RR × hip / thigh / calf).
+    RL, RR x hip / thigh / calf).
 
     .. warning::
 

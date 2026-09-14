@@ -239,9 +239,7 @@ class TestReadState:
 
     def test_initial_positions_are_home(self, connected_hal: Go2MujocoHAL) -> None:
         state = connected_hal.read_state()
-        for name, q, home in zip(
-            state.name, state.position, GO2_HOME_JOINT_TARGETS, strict=True
-        ):
+        for name, q, home in zip(state.name, state.position, GO2_HOME_JOINT_TARGETS, strict=True):
             assert abs(q - home) < 1e-3, f"{name} initial {q} != home {home}"
 
 
@@ -263,9 +261,7 @@ class TestClosedLoopMujoco:
     def test_send_action_holds_home_pose(self, connected_hal: Go2MujocoHAL) -> None:
         connected_hal.send_action(_home_action())
         state = connected_hal.read_state()
-        for i, (q, home) in enumerate(
-            zip(state.position, GO2_HOME_JOINT_TARGETS, strict=True)
-        ):
+        for i, (q, home) in enumerate(zip(state.position, GO2_HOME_JOINT_TARGETS, strict=True)):
             assert abs(q - home) < 5e-3, f"joint {state.name[i]!r} drifted to {q:.4f}"
 
     def test_front_left_thigh_converges(self, connected_hal: Go2MujocoHAL) -> None:
