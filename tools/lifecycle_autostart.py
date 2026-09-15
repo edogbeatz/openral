@@ -37,6 +37,20 @@ _STATE_TO_TRANSITION = {
 }
 
 
+def _skip_transition(current: str, transition_id: int) -> bool:
+    """True when ``current`` already satisfies ``transition_id``.
+
+    Re-read immediately before each ``change_state``: a racing activator
+    (launch_ros LifecycleEventManager + this script) can land ACTIVE
+    between the previous poll and the next request. Sending
+    ``TRANSITION_ACTIVATE`` (id 3) again on Jazzy raises ``RCLError``
+    inside the target node and kills it.
+    """
+    if current == "active":
+        return True
+    return current == "inactive" and transition_id == Transition.TRANSITION_CONFIGURE
+
+
 def _service_path(node: str, suffix: str) -> str:
     return f"{node.rstrip('/')}/{suffix}"
 
@@ -167,11 +181,11 @@ def main() -> int:
         }
         for tid in transitions:
             label = labels[tid]
-            if current == "active":
-                # Already at goal.
-                break
-            if current == "inactive" and label == "configure":
-                continue  # already configured; only need activate
+            # Re-read immediately before sending — a sibling autostart or
+            # launch_ros ChangeState can have finished activate already.
+            current = _read_state(node, args.node, get_state_client)
+            if _skip_transition(current, tid):
+                continue
             _drive_transition(
                 node,
                 args.node,
