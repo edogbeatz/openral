@@ -12,6 +12,13 @@ Subscribes to:
 - `/openral/failure/{hal,sensor,rskill,safety,wam,critic}` (`openral_msgs/FailureTrigger`)
 - `/openral/perception/{motion,objects,ocr,scene_change}` (`openral_msgs/PromptStamped`)
 - `/openral/prompt` (`openral_msgs/PromptStamped`)
+- completion camera (`sensor_msgs/Image` on `completion_camera_topic`; deploy
+  launch sets this from the HAL RGB names — Go2 is
+  `/openral/cameras/front/image`, not the tabletop `top` default)
+
+Jazzy: a second lifecycle `activate` while already `active` used to raise
+`RCLError` and exit the node. The wrapper ignores that redundant transition
+so `startup_prompt` still has a subscriber.
 
 Since the 2026-05-25 amendment the reasoner is **event-driven** with a slow
 heartbeat: the periodic timer ticks at `tick_hz` (default 0.2 Hz = one every
