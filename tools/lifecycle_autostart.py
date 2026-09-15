@@ -37,6 +37,20 @@ _STATE_TO_TRANSITION = {
 }
 
 
+def _skip_transition(current: str, transition_id: int) -> bool:
+    """True when ``current`` already satisfies ``transition_id``.
+
+    Re-read immediately before each ``change_state``: a racing activator
+    (launch_ros LifecycleEventManager + this script) can land ACTIVE
+    between the previous poll and the next request. Sending
+    ``TRANSITION_ACTIVATE`` (id 3) again on Jazzy raises ``RCLError``
+    inside the target node and kills it.
+    """
+    if current == "active":
+        return True
+    return current == "inactive" and transition_id == Transition.TRANSITION_CONFIGURE
+
+
 def _service_path(node: str, suffix: str) -> str:
     return f"{node.rstrip('/')}/{suffix}"
 
@@ -81,20 +95,8 @@ def _drive_transition(
     req = ChangeState.Request()
     req.transition.id = transition_id
     future = change_state_client.call_async(req)
-    # ``change_state`` runs on_<transition> synchronously on the single-
-    # threaded executor, so the future resolves only when it returns.
-    # robocasa-kitchen ``configure`` can block >1 min (MuJoCo + robosuite
-    # import, ``env.reset``, a cold ``uv`` build measured at ~27s) — a
-    # fixed 30s timeout previously returned ``future.result()=None`` and
-    # false-failed a transition that was about to succeed. Wait the
-    # caller-supplied budget instead.
     rclpy.spin_until_future_complete(node, future, timeout_sec=transition_timeout_s)
     resp = future.result()
-    # Post-call state is the source of truth, not ``resp.success``: Jazzy's
-    # first CONFIGURE returns ``success=false`` even though the FSM
-    # transitions, and a spin timing out at the deadline yields
-    # ``resp=None`` even if ``on_configure`` finished microseconds later.
-    # Grace-poll the state so an in-flight settle isn't misread as failure.
     grace_deadline = time.monotonic() + 5.0
     while True:
         post_state = _read_state(node, target_node, get_state_client)
@@ -157,7 +159,7 @@ def main() -> int:
             )
         except TimeoutError as exc:
             print(f"lifecycle-autostart: {exc}", file=sys.stderr)
-            return 0  # don't log an [ERROR] from the process; absent server is informational
+            return 0
 
         current = _read_state(node, args.node, get_state_client)
         transitions = _STATE_TO_TRANSITION[args.target]
@@ -167,11 +169,9 @@ def main() -> int:
         }
         for tid in transitions:
             label = labels[tid]
-            if current == "active":
-                # Already at goal.
-                break
-            if current == "inactive" and label == "configure":
-                continue  # already configured; only need activate
+            current = _read_state(node, args.node, get_state_client)
+            if _skip_transition(current, tid):
+                continue
             _drive_transition(
                 node,
                 args.node,
