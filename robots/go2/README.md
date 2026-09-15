@@ -39,7 +39,7 @@ are the same follow-up class as G1/H1 S0 (CLAUDE.md §6.2). **Go2 Edu**
 | `embodiment_kind` | `quadruped` |
 | Joints | 12 actuated (4 × hip / thigh / calf). The MJCF's free joint is implicit world state and is NOT enumerated in `joints`. |
 | End-effectors | none |
-| Sensors | spliced front RGB (`front` → `observation.images.front`). Hardware radar / Edu extras are **not** declared. |
+| Sensors | spliced front RGB (`front` → `observation.images.front`, topic `/openral/cameras/front/image`). Deploy sets the reasoner `completion_camera_topic` to that path (not the tabletop `top` default). Hardware radar / Edu extras are **not** declared. |
 | Embodiment tags | `go2`, `unitree_go2`, `quadruped` |
 | Supported VLA embodiments | `go2` |
 | Supported control modes | `joint_position` (no `body_twist` this spike) |
