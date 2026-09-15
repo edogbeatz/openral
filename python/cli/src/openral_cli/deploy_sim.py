@@ -290,6 +290,17 @@ _ROBOT_HAL_REGISTRY: dict[str, _HalSpec] = {
         default_params={},
         manifest_driven=True,
     ),
+    "go2": _HalSpec(
+        package="openral_hal_go2",
+        executable="lifecycle_node.py",
+        node_name="openral_hal_go2",
+        supported_robot_names=frozenset({"go2"}),
+        default_params={},
+        manifest_driven=True,
+        # Bare MuJoCo twin from the manifest's `sim:` block — same
+        # posture as g1. An env-only DeployScene must not scene-attach.
+        bare_twin_sim=True,
+    ),
     "rizon4": _HalSpec(
         package="openral_hal_rizon4",
         executable="lifecycle_node.py",

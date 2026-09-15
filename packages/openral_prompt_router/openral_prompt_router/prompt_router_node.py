@@ -47,6 +47,8 @@ from rclpy.qos import (
     QoSReliabilityPolicy,
 )
 
+from openral_prompt_router.startup_gates import actuation_ready
+
 try:  # pragma: no cover — gated by colcon-built artifact
     from openral_msgs.msg import PromptStamped as IDLPromptStamped
 except ImportError:  # pragma: no cover
@@ -69,6 +71,16 @@ _QOS_PROMPT = QoSProfile(
 # Generous: the reasoner's on_configure loads the skill palette (seconds) and
 # only then creates the subscription; missing the prompt boots the run idle.
 _STARTUP_PROMPT_SUBSCRIBER_TIMEOUT_S = 30.0
+
+# Same bound for the F1 actuation path. The reasoner opens its
+# ExecuteRskill client in on_configure and dispatches on the first tick
+# after startup_prompt arrives, with only a 100 ms wait_for_server probe.
+# runtime_node composes WorldState + RskillRunner and only then
+# trigger_configure()s the runner (ActionServer is created there). If the
+# router publishes ~0.5 s before that configure, the reasoner emits
+# KIND_CONTROLLER FailureTrigger ("execute_rskill server … not on graph")
+# and the mission never recovers. Graph query — not a new deploy flag.
+_STARTUP_PROMPT_ACTUATION_TIMEOUT_S = 30.0
 
 # v1 adapter registry — only the CLI source is wired. Priorities chosen
 # so a human prompt overtakes an auto-prompt (CLAUDE.md §6.2 — the
@@ -114,7 +126,7 @@ class PromptRouterNode(LifecycleNode):
         # "no startup prompt — idle until the operator sends one."
         self.declare_parameter("startup_prompt", "")
 
-    # ── lifecycle ──────────────────────────────────────────────────────────
+    # ── lifecycle ──────────────────────────────────────────
 
     def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
         """Build the fan-out publisher + one subscriber per allowed source."""
@@ -159,7 +171,7 @@ class PromptRouterNode(LifecycleNode):
         self._pub = None
         return TransitionCallbackReturn.SUCCESS
 
-    # ── callback ───────────────────────────────────────────────────────────
+    # ── callback ──────────────────────────────────────────
 
     def _on_inbound(self, source: str, priority: int, msg: Any) -> None:
         """Forward a prompt onto ``/openral/prompt`` with the source tag."""
@@ -218,6 +230,25 @@ class PromptRouterNode(LifecycleNode):
                 f"{_STARTUP_PROMPT_SUBSCRIBER_TIMEOUT_S:.0f}s; publishing anyway "
                 "(reasoner may miss it under VOLATILE QoS)",
             )
+        # Same class of race as the subscriber wait: publishing before the
+        # F1 server is advertised lets the reasoner dispatch into
+        # KIND_CONTROLLER. Poll the ROS graph (no nested spin — on_activate
+        # already runs on the executor; wait_for_server would deadlock).
+        deadline = time.monotonic() + _STARTUP_PROMPT_ACTUATION_TIMEOUT_S
+        while not actuation_ready(self._graph_service_names()) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if not actuation_ready(self._graph_service_names()):
+            self.get_logger().warning(
+                "startup_prompt: /openral/execute_rskill not advertised and/or "
+                "openral_skill_runner change_state not on graph after "
+                f"{_STARTUP_PROMPT_ACTUATION_TIMEOUT_S:.0f}s; publishing anyway "
+                "(reasoner may emit KIND_CONTROLLER if the runner is still configuring)",
+            )
+        else:
+            self.get_logger().info(
+                "startup_prompt: /openral/execute_rskill advertised; "
+                "openral_skill_runner on graph",
+            )
         msg = IDLPromptStamped()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "openral_prompt_router"
@@ -232,7 +263,11 @@ class PromptRouterNode(LifecycleNode):
             f"startup_prompt published source=cli priority={DEFAULT_SOURCES['cli']} text={text!r}",
         )
 
-    # ── public helpers for tests ───────────────────────────────────────────
+    # ── public helpers for tests ───────────────────────────
+
+    def _graph_service_names(self) -> set[str]:
+        """Service names currently visible on the ROS graph (no executor spin)."""
+        return {name for name, _types in self.get_service_names_and_types()}
 
     @property
     def forwarded_count(self) -> int:

@@ -334,7 +334,18 @@ class TestEmbodimentTags:
 class TestModelFamily:
     @pytest.mark.parametrize(
         "fam",
-        ["smolvla", "pi05", "xvla", "act", "diffusion", "rldx", "molmoact2", "gr00t", "openvla"],
+        [
+            "smolvla",
+            "pi05",
+            "xvla",
+            "act",
+            "diffusion",
+            "rldx",
+            "molmoact2",
+            "gr00t",
+            "openvla",
+            "rsl_rl_onnx",
+        ],
     )
     def test_supported_families_accepted(self, fam: str) -> None:
         d = _minimal_manifest_dict()

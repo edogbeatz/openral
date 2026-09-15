@@ -92,6 +92,7 @@ runtime it depends on as an OpenRAL Pro plugin.
 | `xr1-robocasa365` | xr1 | panda_mobile |
 | `xr1-vlabench` | xr1 | franka_panda |
 | `rldx1-ft-simpler-widowx-nf4` | rldx | widowx |
+| `rsl-rl-onnx-go2-velocity-flat` | rsl_rl_onnx | go2 |
 | `smolvla-libero` | smolvla | franka_panda |
 | `smolvla-maniskill-franka` | smolvla | franka_panda |
 | `smolvla-metaworld` | smolvla | sawyer |

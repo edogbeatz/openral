@@ -29,6 +29,7 @@ def _register_policies() -> None:
         rlbench_3dda,
         rldx,
         robots,
+        rsl_rl_onnx,
         smolvla,
         xr1,
         xvla,

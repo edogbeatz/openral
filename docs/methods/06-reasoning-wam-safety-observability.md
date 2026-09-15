@@ -326,8 +326,8 @@ _`reasoner_node` lifecycle wrapper. Thin rclpy shell around `openral_reasoner.Re
 ### `packages/openral_prompt_router/openral_prompt_router/prompt_router_node.py`
 _Single lifecycle node that fans in operator prompts from any external source into `/openral/prompt`. CLI is the only v1 adapter; WebSocket / voice / Slack out-of-scope per the design's "out-of-scope" section._
 
-- module constant `DEFAULT_SOURCES: dict[str, int] = {"cli": 100, "dashboard": 100, "auto": 10}` — Default source → priority registry; human sources get 100, machine cascades get 10. (L76)
-- `class PromptRouterNode(LifecycleNode)` (L83) — Lifecycle node.
+- module constant `DEFAULT_SOURCES: dict[str, int] = {"cli": 100, "dashboard": 100, "auto": 10}` — Default source → priority registry; human sources get 100, machine cascades get 10. (L88)
+- `class PromptRouterNode(LifecycleNode)` (L95) — Lifecycle node.
   - `__init__(*, node_name="openral_prompt_router", sources=None)` — Initialise with a source → priority registry. Defaults to `DEFAULT_SOURCES`.
   - `on_configure` — Build the `/openral/prompt` fan-out publisher and one `/openral/prompt_in/<source>` subscriber per allowed source.
   - `_on_inbound(source, priority, msg)` — Forward the inbound PromptStamped onto `/openral/prompt` after merging `{"source": ..., "priority": ...}` into `metadata_json` (preserving any per-source fields).

@@ -1,0 +1,269 @@
+# RobotDescription — Unitree Go2 quadruped (physical embodiment, sim baseline).
+#
+# Mirrors `GO2_DESCRIPTION` in python/hal/src/openral_hal/go2.py (drift guarded
+# by tests/unit/test_robot_manifests_match_hal_constants.py). Joint limits +
+# effort caps come verbatim from the official Unitree Go2 URDF
+# (`unitreerobotics/unitree_ros` `go2_description.urdf`) and match the
+# mujoco_menagerie `unitree_go2` MJCF.
+#
+# `Go2MujocoHAL` is the only execution path today; real-HW HAL over
+# `unitree_sdk2` is a follow-up (same M2 / S0 posture as G1/H1). Without a
+# locomotion controller the digital twin is a contract validator only
+# (falls over under gravity) — tests/sim/test_go2_hal_mujoco.py and
+# scenes/deploy/go2_bench.yaml run with gravity_enabled=False.
+#
+# 12 actuated joints: FL / FR / RL / RR × (hip, thigh, calf). Floating-base
+# qpos[0..6] is implicit world state, NOT enumerated. Rear thighs have a
+# wider range than the front pair (URDF fact). Calf range excludes 0 —
+# connect() loads the menagerie `home` keyframe (thigh 0.9, calf −1.8).
+#
+# This is a sim-only spike. Go2 Edu (extra cameras / compute) is a follow-up.
+# Hardware has a face radar; it is NOT declared here (no calibrated lidar
+# spec in-tree). Collision geometry is empty — safety self-collision is a
+# remaining gap (see robots/go2/README.md).
+
+name: "go2"
+embodiment_kind: "quadruped"
+base_frame: "base"
+
+# robot_state_publisher wiring. URDF root link is ``base``, matching
+# base_frame; no static transform needed.
+assets:
+  urdf:
+    ref: "rd:go2_description"
+  mjcf: "rd:go2_mj_description"
+
+joints:
+  # ── Front left ────────────────────────────────────────────────────
+  - name: "FL_hip_joint"
+    origin_xyz: [0.1934, 0.0465, 0.0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [1, 0, 0]
+    joint_type: "revolute"
+    parent_link: "base"
+    child_link: "FL_hip"
+    position_limits: [-1.0472, 1.0472]
+    velocity_limit: 15.0
+    effort_limit: 23.7
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "FL_thigh_joint"
+    origin_xyz: [0.0, 0.0955, 0.0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "FL_hip"
+    child_link: "FL_thigh"
+    position_limits: [-1.5708, 3.4907]
+    velocity_limit: 15.0
+    effort_limit: 23.7
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "FL_calf_joint"
+    origin_xyz: [0.0, 0.0, -0.213]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "FL_thigh"
+    child_link: "FL_calf"
+    position_limits: [-2.7227, -0.83776]
+    velocity_limit: 7.85
+    effort_limit: 45.43
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  # ── Front right ───────────────────────────────────────────────────
+  - name: "FR_hip_joint"
+    origin_xyz: [0.1934, -0.0465, 0.0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [1, 0, 0]
+    joint_type: "revolute"
+    parent_link: "base"
+    child_link: "FR_hip"
+    position_limits: [-1.0472, 1.0472]
+    velocity_limit: 15.0
+    effort_limit: 23.7
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "FR_thigh_joint"
+    origin_xyz: [0.0, -0.0955, 0.0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "FR_hip"
+    child_link: "FR_thigh"
+    position_limits: [-1.5708, 3.4907]
+    velocity_limit: 15.0
+    effort_limit: 23.7
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "FR_calf_joint"
+    origin_xyz: [0.0, 0.0, -0.213]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "FR_thigh"
+    child_link: "FR_calf"
+    position_limits: [-2.7227, -0.83776]
+    velocity_limit: 7.85
+    effort_limit: 45.43
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  # ── Rear left ─────────────────────────────────────────────────────
+  - name: "RL_hip_joint"
+    origin_xyz: [-0.1934, 0.0465, 0.0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [1, 0, 0]
+    joint_type: "revolute"
+    parent_link: "base"
+    child_link: "RL_hip"
+    position_limits: [-1.0472, 1.0472]
+    velocity_limit: 15.0
+    effort_limit: 23.7
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "RL_thigh_joint"
+    origin_xyz: [0.0, 0.0955, 0.0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "RL_hip"
+    child_link: "RL_thigh"
+    position_limits: [-0.5236, 4.5379]
+    velocity_limit: 15.0
+    effort_limit: 23.7
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "RL_calf_joint"
+    origin_xyz: [0.0, 0.0, -0.213]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "RL_thigh"
+    child_link: "RL_calf"
+    position_limits: [-2.7227, -0.83776]
+    velocity_limit: 7.85
+    effort_limit: 45.43
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  # ── Rear right ────────────────────────────────────────────────────
+  - name: "RR_hip_joint"
+    origin_xyz: [-0.1934, -0.0465, 0.0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [1, 0, 0]
+    joint_type: "revolute"
+    parent_link: "base"
+    child_link: "RR_hip"
+    position_limits: [-1.0472, 1.0472]
+    velocity_limit: 15.0
+    effort_limit: 23.7
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "RR_thigh_joint"
+    origin_xyz: [0.0, -0.0955, 0.0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "RR_hip"
+    child_link: "RR_thigh"
+    position_limits: [-0.5236, 4.5379]
+    velocity_limit: 15.0
+    effort_limit: 23.7
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "RR_calf_joint"
+    origin_xyz: [0.0, 0.0, -0.213]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "RR_thigh"
+    child_link: "RR_calf"
+    position_limits: [-2.7227, -0.83776]
+    velocity_limit: 7.85
+    effort_limit: 45.43
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+
+end_effectors: []
+
+# Front RGB camera. Pose is the official URDF ``front_camera_joint`` on
+# ``base``. The menagerie MJCF ships no ``<camera>``, so the generic HAL
+# camera rig splices this in for `deploy sim`. Intrinsics are NOMINAL
+# (same 640×480 / fx=fy=343 pinhole the G1 spliced head cam uses) — not
+# a calibrated Go2 lens.
+sensors:
+  - name: "front"
+    modality: "rgb"
+    frame_id: "front_camera"
+    parent_frame: "base"
+    rate_hz: 15.0
+    intrinsics:
+      width: 640
+      height: 480
+      fx: 343.0
+      fy: 343.0
+      cx: 320.0
+      cy: 240.0
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.front"
+    sim_placement:
+      parent_body: "base"
+      pos: [0.32715, -0.00003, 0.04297]
+      target: [1.32715, -0.00003, 0.0]
+
+capabilities:
+  locomotion: ["quadruped"]
+  can_lift_kg: 8.0
+  has_dexterous_hands: false
+  has_tactile: false
+  has_force_control: true
+  has_vision: true
+  has_lidar: false
+  has_audio: false
+  bimanual: false
+  supported_control_modes:
+    - "joint_position"
+  supported_vla_embodiments:
+    - "go2"
+  embodiment_tags:
+    - "go2"
+    - "unitree_go2"
+    - "quadruped"
+
+safety:
+  max_ee_speed_m_s: 1.5
+  max_joint_speed_factor: 0.5
+  max_force_n: 100.0
+  max_torque_nm: 45.43
+  deadman_required: true
+
+# `sdk_kind: open` — menagerie model is BSD-3-Clause (Unitree); `mujoco`
+# Python is Apache-2.0. Compatible permissive licenses. A future
+# `Go2RealHAL` over `unitree_sdk2` will derive from this baseline via
+# `make_real_description` and flip sdk_kind.
+sdk_kind: "open"
+# Explicit sim/real HAL entrypoints (resolved by openral_hal.build_hal).
+# Sim-only → real: null until a unitree_sdk2 adapter + locomotion controller.
+hal:
+  sim: "openral_hal.go2:Go2MujocoHAL"
+  real: null
+  # Consumed by ``build_hal`` (not a ROS param — the lifecycle node does
+  # not declare ``gravity_enabled``). Required: no gait, so the
+  # floating-base twin falls under gravity.
+  parameters:
+    defaults:
+      gravity_enabled: false
+
+# MuJoCo wiring consumed by ``openral_hal.MujocoArmHAL.from_description``.
+# Source: ``unitree_go2/go2.xml`` in mujoco_menagerie. Floating-base
+# quadruped — qpos starts at 7 (free joint), qvel at 6. keyframe 0 is
+# the menagerie ``home`` stand (calves cannot rest at 0).
+sim:
+  floating_base: true
+  keyframe_index: 0
+
+# Collision geometry left empty this spike — `openral collision lower`
+# against the Go2 URDF/MJCF is a documented follow-up. The safety kernel
+# has no self-collision primitives until that lands.
+collision_geometry: []
+allowed_collision_pairs: []
+schema_version: '0.1'

@@ -455,6 +455,7 @@ contributor should look at before adding similar code.
 
 - **HAL adapters (sim)** — `FrankaPandaHAL`, `UR5eHAL`, `UR10eHAL`,
   `SO100MujocoHAL`, `Rizon4MujocoHAL`, `G1MujocoHAL`, `H1MujocoHAL`,
+  `Go2MujocoHAL`,
   `AlohaMujocoHAL`, `OpenArmMujocoHAL` all extend `MujocoArmHAL`.
   Following the bimanual amendment and the 2026-05
   cleanup that collapsed each subclass `__init__` into a single
@@ -480,11 +481,12 @@ contributor should look at before adding similar code.
   `MujocoArmHAL.from_description(desc)`. No per-robot Python file is
   required at all; the existing classes only exist so the explicit
   `hal.sim` strings (`"openral_hal.<robot>:<Class>"`) some manifests pin keep resolving.
-  `H1MujocoHAL` retains a real subclass body only for its
-  `_per_step_update` torque hook (default no-op in `MujocoArmHAL`,
-  overridden by H1 to recompute `tau = kp*(target-q) - kv*dq` every
-  step) — that PD behavior is H1-specific cerebellar substitute, not
-  arm-data, and stays in code.
+  `H1MujocoHAL` and `Go2MujocoHAL` retain a real subclass body only for
+  their `_per_step_update` torque hook (default no-op in `MujocoArmHAL`,
+  overridden to recompute `tau = kp*(target-q) - kv*dq` every
+  step) — that PD behavior is a Unitree torque-motor substitute, not
+  arm-data, and stays in code. Go2 is the first quadruped sibling; do
+  not invent a second PD helper until a third torque-MJCF robot lands.
 - **Policy adapter loader seams — *resolved.*** The 2026-05 cleanup
   pulled three parallel copies of `_load_manifest_for_spec` (one each
   in `policies/smolvla.py`, `policies/rldx.py`, `policies/pi05.py`)
@@ -504,10 +506,13 @@ contributor should look at before adding similar code.
   fifth adapter ever needs the same shape, route it through
   `_policy_loading.load_manifest_for_spec`.
 - **Humanoid contract validators vs useful humanoid sims** —
-  `H1MujocoHAL` and G1's default joint-position path are contract validators.
-  Both robots' floating bases fall without an S0 cerebellar balance controller
+  `H1MujocoHAL`, `Go2MujocoHAL`, and G1's default joint-position path are
+  contract validators.
+  Their floating bases fall without a gait / S0 cerebellar balance controller
   (CLAUDE.md §6.2); their joint-convergence tests run with
-  `gravity_enabled=False`.
+  `gravity_enabled=False`. Go2 additionally pins that default in
+  `hal.parameters.defaults` so `deploy sim` does not need an undeclared
+  ROS param.
   This is the same situation a future GR1 HAL twin (currently still
   deferred — see below) will be in until the C++ S0 cerebellum
   lands.  Do NOT promote these HALs to "useful humanoid sim" by
@@ -760,7 +765,7 @@ pattern in `tools/schema_export.py`.*
 
 26. **`load_manifest_for_spec` — one copy left, on purpose.** Ten adapters
     (`smolvla`, `pi05`, `gr00t`, `rldx`, `xr1`, `openvla`, `molmoact2`,
-    `lingbot_vla2`, `internvla_n1`, plus `_policy_loading` itself) call
+    `lingbot_vla2`, `internvla_n1`, `rsl_rl_onnx`, plus `_policy_loading` itself) call
     `policies/_policy_loading.load_manifest_for_spec`. `policies/act.py` keeps
     a private `_load_manifest_for_spec`, which `backends/libero.py` imports.
     The bodies differ in one reachable case: the shared version guards

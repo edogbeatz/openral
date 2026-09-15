@@ -426,6 +426,7 @@ ros2-build:
                           openral_hal_scene_attached \
                           openral_hal_g1 \
                           openral_hal_h1 \
+                          openral_hal_go2 \
                           openral_hal_rizon4 \
                           openral_world_state \
                           openral_reasoner_ros \
@@ -526,6 +527,7 @@ ros2-test:
                           openral_hal_scene_attached \
                           openral_hal_g1 \
                           openral_hal_h1 \
+                          openral_hal_go2 \
                           openral_hal_rizon4 \
                           openral_world_state \
                           openral_reasoner_ros \

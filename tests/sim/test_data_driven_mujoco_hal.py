@@ -46,6 +46,7 @@ _MANIFEST_DRIVEN_ROBOTS = [
     "rizon4",
     "g1",
     "h1",
+    "go2",
     pytest.param(
         "aloha_bimanual",  # bimanual: 2 grippers + mirror_actuator + keyframe
         marks=pytest.mark.skipif(_GYM_ALOHA_MISSING, reason="gym_aloha not installed"),
@@ -162,6 +163,7 @@ def test_python_description_matches_yaml(robot_id: str, description: RobotDescri
         "rizon4": ("openral_hal.flexiv_rizon4", "RIZON4_DESCRIPTION"),
         "g1": ("openral_hal.g1", "G1_DESCRIPTION"),
         "h1": ("openral_hal.h1", "H1_DESCRIPTION"),
+        "go2": ("openral_hal.go2", "GO2_DESCRIPTION"),
         "aloha_bimanual": ("openral_hal.aloha", "ALOHA_DESCRIPTION"),
         "openarm": ("openral_hal.openarm", "OPENARM_DESCRIPTION"),
         "anvil_openarm_v2": ("openral_hal.anvil_openarm_v2", "ANVIL_OPENARM_V2_DESCRIPTION"),

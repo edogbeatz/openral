@@ -128,6 +128,9 @@ _FAMILY_INSTALL_HINTS: dict[str, str] = {
         "policy itself runs in tools/internvla_n1_sidecar.py's own "
         "auto-provisioned Python 3.11 venv (transformers 4.51 pin)."
     ),
+    "rsl_rl_onnx": (
+        "Install onnxruntime (HAL sim extras): `just sync --all-packages --group sim`."
+    ),
     # `mock` has no external deps — included so a smoke that mentions a
     # mock-family rSkill never gets filtered out.
     "mock": "No extras required.",
@@ -152,6 +155,7 @@ _FAMILY_INSTALL_GROUPS: dict[str, tuple[str, ...]] = {
     "lingbot_vla2": ("lingbot",),
     "lingbot_va_a1": ("lingbot",),
     "internvla_n1": ("rldx",),
+    "rsl_rl_onnx": ("sim",),
     "mock": (),
 }
 
@@ -194,6 +198,7 @@ _FAMILY_REQUIRED_IMPORTS: dict[str, tuple[str, ...]] = {
     # needs the ZMQ + msgpack wire; the transformers-4.51 stack lives in
     # the sidecar's auto-provisioned py3.11 venv.
     "internvla_n1": ("zmq", "msgpack"),
+    "rsl_rl_onnx": ("onnxruntime",),
     "mock": (),
 }
 

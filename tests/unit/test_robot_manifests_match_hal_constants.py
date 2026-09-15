@@ -10,7 +10,7 @@ manifests), derived from the sim baseline via
 ``openral_hal._real_description.make_real_description`` — kinematics,
 safety envelope, capabilities and ``hal`` entrypoints are shared; only
 ``sdk_kind`` differs. G1/H1/Rizon4/OpenArm/Anvil-v2 pin to their sim baseline
-because none has a real-HW HAL yet (G1/H1 gated on the M2 C++ S0 cerebellum,
+because none has a real-HW HAL yet (G1/H1/Go2 gated on the M2 C++ S0 cerebellum,
 CLAUDE.md §6.2; Rizon4/OpenArm/Anvil real-HW wrappers are tracked follow-ups)
 — their ``hal.real`` is null until the real adapter lands.
 
@@ -40,6 +40,7 @@ from openral_core import RobotDescription
         # Sim-baseline pins (no real-HW HAL yet) — see module docstring.
         ("robots/g1/robot.yaml", "G1_DESCRIPTION"),
         ("robots/h1/robot.yaml", "H1_DESCRIPTION"),
+        ("robots/go2/robot.yaml", "GO2_DESCRIPTION"),
         ("robots/rizon4/robot.yaml", "RIZON4_DESCRIPTION"),
         ("robots/openarm/robot.yaml", "OPENARM_DESCRIPTION"),
         # Anvil OpenARM 2.0: standard v2 + Anvil's J1/J6 range deltas + wrist

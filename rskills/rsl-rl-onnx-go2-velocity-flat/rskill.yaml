@@ -1,0 +1,74 @@
+# rSkill manifest — Isaac Lab / Unitree rsl-rl ONNX Go2 locomotion
+# Wraps: diasAiMaster/unitree-go2-velocity-flat  (BSD-3-Clause)
+# Adapter: openral_sim.policies.rsl_rl_onnx  (model_family: rsl_rl_onnx)
+#
+# This is a proprio-only joint-position policy. It is NOT SmolVLA and
+# SmolVLA cannot load policy.onnx. kind stays `vla` so execute_rskill /
+# make_policy dispatch through the existing family token.
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-rsl_rl_onnx-go2-velocity_flat-fp32"
+version: "0.1.0"
+license: "bsd"
+role: "s1"
+kind: "vla"
+model_family: "rsl_rl_onnx"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+embodiment_tags:
+  - "go2"
+
+# Proprio-only. The policy does not consume cameras. IMU / base pose are
+# read from WorldState when the HAL publishes them; the adapter falls back
+# to zeros / identity gravity when they are absent (Go2 MuJoCo HAL gap).
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "onnx"
+quantization:
+  dtype: "fp32"
+  backend: "onnx"
+weights_uri: "hf://diasAiMaster/unitree-go2-velocity-flat"
+
+# ── Execution semantics ────────────────────────────────────────────────────
+# Single-step 50 Hz (deploy.yaml step_dt: 0.02). No action chunk.
+chunk_size: 1
+latency_budget:
+  per_chunk_ms: 20.0
+  max_execution_s: 60.0
+
+# Velocity command is NOT derived from the reasoner prompt. Isaac Lab's
+# `velocity_commands` term is a 3-D joystick; execute_rskill reads this
+# extra so a tick can run without a nav stack. Override per deploy.
+policy_extras:
+  velocity_commands: [0.5, 0.0, 0.0]
+  onnx_filename: "policy.onnx"
+  deploy_yaml: "params/deploy.yaml"
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+source_repo: "hf://diasAiMaster/unitree-go2-velocity-flat"
+paper_url: "https://github.com/unitreerobotics/unitree_rl_mjlab"
+
+description: >
+  Isaac Lab / Unitree rsl-rl ONNX locomotion for the 12-DoF Go2. Loads
+  policy.onnx plus params/deploy.yaml and emits absolute JOINT_POSITION
+  targets. Velocity command comes from policy_extras, not the reasoner
+  prompt. Does not claim gait quality.
+
+actions:
+  - "navigate"
+objects:
+  - "terrain"
+scenes:
+  - "flat"
+
+# 12-D menagerie-order joint positions (radians). The adapter applies
+# deploy.yaml joint_ids_map internally; the runner sees HAL order.
+action_contract:
+  dim: 12
+  representation: "joint_positions"
+  joint_units: "radians"

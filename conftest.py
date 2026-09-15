@@ -49,6 +49,8 @@ for _pkg in (
     "openral_perception_ros",
     # pure-Python sensor_leg (rclpy deferred) — tests/unit/test_sensor_leg.py
     "openral_rskill_ros",
+    # openral_world_state_ros (ROS wrapper; dir is packages/world_state)
+    "world_state",
 ):
     _pkg_dir = _REPO_ROOT / "packages" / _pkg
     if _pkg_dir.is_dir() and str(_pkg_dir) not in sys.path:
@@ -63,7 +65,7 @@ structlog.configure(
 )
 
 
-# ── ROS 2 `launch` swaps the global logger class ────────────────────────────
+# ── ROS 2 `launch` swaps the global logger class ──────────────────────────
 # Importing `launch` runs `launch.logging.reset()` at module scope, which calls
 # `logging.setLoggerClass(LaunchLogger)` — process-wide and permanent. Every
 # logger created after that point, in any package, is a `LaunchLogger` whose

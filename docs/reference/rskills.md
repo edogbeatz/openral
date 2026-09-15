@@ -78,6 +78,7 @@ All entries are published under `OpenRAL/rskill-*` on HuggingFace Hub and exerci
 | [`rskill-smolvla-so101-eraser_place-bf16`](https://github.com/OpenRAL/openral/tree/master/rskills/rskill-smolvla-so101-eraser_place-bf16/) | SmolVLA SO-101 "place the erase on the blue square" checkpoint (makermods, 25 real teleop episodes) | `so101_follower` | Apache-2.0 — weights stay upstream; chunk verified against the training data |
 | [`smolvla-robotwin`](https://github.com/OpenRAL/openral/tree/master/rskills/smolvla-robotwin/) | SmolVLA finetuned on RoboTwin 2.0 (50 bimanual SAPIEN tasks) | `aloha_agilex` | Apache-2.0 — py3.10 SAPIEN sidecar |
 | [`smolvla-vlabench`](https://github.com/OpenRAL/openral/tree/master/rskills/smolvla-vlabench/) | SmolVLA finetuned on VLABench (`lerobot/vlabench_unified`, 97 tasks) — integration baseline, 0% on current tasks | `franka_panda` | Apache-2.0 |
+| [`rsl-rl-onnx-go2-velocity-flat`](https://github.com/OpenRAL/openral/tree/master/rskills/rsl-rl-onnx-go2-velocity-flat/) | Isaac Lab / Unitree rsl-rl ONNX Go2 locomotion (`model_family: rsl_rl_onnx`) | `go2` | BSD-3-Clause weights — proprio-only 12-D `JOINT_POSITION`; not SmolVLA |
 
 `XiaomiRobotics/Xiaomi-Robotics-1-5B` is intentionally absent: its only model
 artifact is a raw `model_states.pt` post-training seed with no processor or

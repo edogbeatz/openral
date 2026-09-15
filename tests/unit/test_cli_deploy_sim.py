@@ -726,6 +726,32 @@ def test_bh_deploy_sim_so101_manifest_driven_bare_twin() -> None:
     assert "sim_robot_yaml" not in invocation.hal_params
 
 
+def test_go2_bench_resolves_bare_twin() -> None:
+    """go2_bench boots the dedicated Go2 lifecycle node as a bare MuJoCo twin.
+
+    Manifest-driven + ``bare_twin_sim=True`` (same posture as g1): injects
+    ``robots/go2/robot.yaml`` + ``hal_mode=sim``, and must not scene-attach.
+    Gravity is pinned off in the robot manifest's ``hal.parameters.defaults``,
+    not as a ROS param (the lifecycle node does not declare it).
+    """
+    invocation = resolve_launch_invocation(
+        config=_REPO_ROOT / "scenes" / "deploy" / "go2_bench.yaml",
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    assert invocation.robot_id == "go2"
+    assert invocation.hal.package == "openral_hal_go2"
+    assert invocation.hal.manifest_driven is True
+    assert invocation.hal.bare_twin_sim is True
+    assert invocation.hal_params["robot_yaml"] == str(_REPO_ROOT / "robots" / "go2" / "robot.yaml")
+    assert invocation.hal_params["hal_mode"] == "sim"
+    assert "sim_env_yaml" not in invocation.hal_params
+    assert "sim_robot_yaml" not in invocation.hal_params
+    assert "gravity_enabled" not in invocation.hal_params
+
+
 def test_g1_vln_scene_enables_walking_controller() -> None:
     invocation = resolve_launch_invocation(
         config=_REPO_ROOT / "scenes" / "deploy" / "g1_vln.yaml",

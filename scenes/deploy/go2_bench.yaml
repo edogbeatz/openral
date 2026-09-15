@@ -1,0 +1,38 @@
+# Unitree Go2 quadruped bench — deploy playground (bare MuJoCo digital twin).
+#
+# Sim-only spike. Boots the manifest-driven Go2 twin with gravity off so
+# the floating-base quadruped holds the menagerie `home` stand without a
+# locomotion controller. The generic camera rig splices the manifest's
+# front RGB camera onto `base`. Pair with:
+#
+#   openral doctor
+#   openral deploy sim --config scenes/deploy/go2_bench.yaml
+#   openral deploy sim --config scenes/deploy/go2_bench.yaml --dry-run
+#
+# Gravity is pinned off in ``robots/go2/robot.yaml``
+# ``hal.parameters.defaults`` (consumed by ``build_hal``). Do not put
+# ``gravity_enabled`` in this scene's ``hal.defaults`` — that block
+# becomes ROS params and the lifecycle node does not declare it.
+#
+# `deploy run` is refused (`hal.real` is null). No walking policy, no
+# Go2 Edu extras. Every perception/nav leg is off: the bare twin has no
+# lidar/depth and this bench is a HAL pipe proof, not a VLA rollout.
+scene:
+  id: go2_bench
+robot_id: go2
+runtime:
+  enable_slam: false
+  enable_nav2: false
+  enable_octomap: false
+  enable_octomap_kernel_check: true
+  enable_object_detector: false
+  object_detector_onnx: null
+  object_detector_manifest: null
+  object_detector_query: null
+  object_detector_locators: null
+  enable_reward_monitor: false
+  reward_monitor_manifest: null
+  reward_monitor_task: null
+  enable_critic: false
+  spatial_memory_ingest: false
+  approach_skill_id: null

@@ -2366,6 +2366,37 @@ def _assemble_obs_images(
         obs["image_handles"] = handles
 
 
+def _attach_locomotion_proprio(obs: dict[str, Any], world_state: Any) -> None:
+    """Copy HAL / WorldState proprio extras VLAs ignore and rsl-rl ONNX reads.
+
+    Existing adapters only look up ``obs["state"]`` / ``obs["images"]``. Adding
+    ``joint_vel``, ``base_twist``, and ``base_pose`` is backward-compatible.
+    The Go2 MuJoCo HAL may leave pose/twist unset — the rsl-rl adapter then
+    falls back to zero angular velocity and identity projected gravity.
+    """
+    js = getattr(world_state, "joint_state", None)
+    position = getattr(js, "position", None) if js is not None else None
+    if position:
+        # HAL-order radians. Prefer this over remapped ``obs["state"]`` so
+        # ``joint_ids_map`` in deploy.yaml stays the single remap.
+        obs["joint_pos"] = list(position)
+    velocity = getattr(js, "velocity", None) if js is not None else None
+    if velocity:
+        obs["joint_vel"] = list(velocity)
+    twist = getattr(world_state, "base_twist", None)
+    if twist is not None:
+        obs["base_twist"] = tuple(float(v) for v in twist)
+    pose = getattr(world_state, "base_pose", None)
+    if pose is not None:
+        xyz = getattr(pose, "xyz", None)
+        quat = getattr(pose, "quat_xyzw", None)
+        if xyz is not None and quat is not None:
+            obs["base_pose"] = {
+                "xyz": tuple(float(v) for v in xyz),
+                "quat_xyzw": tuple(float(v) for v in quat),
+            }
+
+
 def _collect_image_handles(
     image_frames: dict[str, Any],
     sensor_to_slot: dict[str, str],
@@ -3267,6 +3298,7 @@ def _make_policy_adapter_skill(
             # so the adapter + `openral sim run` agree (see
             # `_sensor_name_to_vla_slot` / `_decode_image_frames`).
             _assemble_obs_images(obs, world_state.image_frames, sensor_to_slot)
+            _attach_locomotion_proprio(obs, world_state)
 
             action_array = self._adapter.step(obs, self._prompt)  # type: ignore[attr-defined]
             # Reorder policy-order action → robot-order action so the
