@@ -19,13 +19,55 @@ entry point or a test ``trigger_configure`` sequence) configures + activates aft
 
 from __future__ import annotations
 
+import os
 import pathlib
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from openral_core import RobotDescription
 from openral_world_state import WorldStateAggregator
+
+
+def _ensure_world_state_ros_importable() -> None:
+    """Make ``openral_world_state_ros`` importable for ``compose_runtime``.
+
+    The ROS package name is ``openral_world_state``; the Python module is
+    ``openral_world_state_ros``. A pip ``openral-world-state`` install only
+    provides the aggregator library. When ament never installed this
+    package (go2 HAL-only overlay), ``runtime_node`` exits 3 and
+    ``/openral/execute_rskill`` is never advertised. Source-tree fallback
+    matches ``just`` integration tests — ``packages/world_state`` on
+    ``PYTHONPATH``. Also searches ``$OPENRAL_HOME`` / ``$OPENRAL_REPO_ROOT``
+    when compose.py is ament-installed away from the checkout.
+    """
+    try:
+        import openral_world_state_ros  # noqa: F401  # reason: probe only
+        return
+    except ImportError:
+        pass
+    candidates = [pathlib.Path(__file__).resolve().parents[2] / "world_state"]
+    for key in ("OPENRAL_HOME", "OPENRAL_REPO_ROOT"):
+        raw = os.environ.get(key, "").strip()
+        if raw:
+            candidates.append(pathlib.Path(raw) / "packages" / "world_state")
+    for candidate in candidates:
+        marker = candidate / "openral_world_state_ros" / "lifecycle_node.py"
+        if not marker.is_file():
+            continue
+        path = str(candidate)
+        if path not in sys.path:
+            sys.path.insert(0, path)
+        return
+    raise ImportError(
+        "openral_world_state_ros is not importable. runtime_node "
+        "composes WorldState + RskillRunner in one process; without "
+        "this module /openral/execute_rskill is never advertised. "
+        "From the repo root: just ros2-build && source "
+        "install/setup.bash (or put packages/world_state on "
+        "PYTHONPATH / set OPENRAL_HOME)."
+    )
 
 if TYPE_CHECKING:
     from openral_world_state_ros.lifecycle_node import _WorldStateLifecycleNode
@@ -48,7 +90,7 @@ class ComposedRuntime:
             ``_WorldStateLifecycleNode`` (publishes the typed
             ``/openral/world_state_*`` topics).
         skill_runner_node: The colocated ``RskillRunnerNode`` that
-            owns the ``ExecuteRskill`` action server.
+            owns the ExecuteRskill action server.
     """
 
     description: RobotDescription
@@ -143,6 +185,8 @@ def compose_runtime(
     # Deferred import — keeps the module import-safe on hosts without
     # rclpy (matches CLAUDE.md §1.11 / §5.4 "real component or skip").
     import rclpy
+
+    _ensure_world_state_ros_importable()
     from openral_world_state_ros.lifecycle_node import _WorldStateLifecycleNode
 
     from openral_rskill_ros.rskill_runner_node import RskillRunnerNode
