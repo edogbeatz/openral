@@ -175,6 +175,18 @@ def test_drive_transition_polls_grace_window_before_success() -> None:
     )  # must not raise — second poll returns "inactive"
 
 
+def test_skip_transition_when_already_active() -> None:
+    """Second ACTIVATE while active must not be sent (Jazzy RCLError crash)."""
+    mod = _load_tool()
+    activate = mod.Transition.TRANSITION_ACTIVATE
+    configure = mod.Transition.TRANSITION_CONFIGURE
+    assert mod._skip_transition("active", activate) is True
+    assert mod._skip_transition("active", configure) is True
+    assert mod._skip_transition("inactive", configure) is True
+    assert mod._skip_transition("inactive", activate) is False
+    assert mod._skip_transition("unconfigured", configure) is False
+
+
 def test_drive_transition_raises_on_genuine_failure() -> None:
     """A response failure with a never-advancing state raises after the grace poll."""
     mod = _load_tool()
