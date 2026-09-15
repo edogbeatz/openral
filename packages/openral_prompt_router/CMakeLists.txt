@@ -21,6 +21,11 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_prompt_router_node test/test_prompt_router_node.py
     TIMEOUT 60
   )
+  ament_add_pytest_test(
+    test_startup_prompt_actuation_gate
+    test/test_startup_prompt_actuation_gate.py
+    TIMEOUT 60
+  )
 endif()
 
 ament_package()
