@@ -525,8 +525,8 @@ _Isaac Lab / Unitree rsl-rl ONNX locomotion adapter (`model_family: "rsl_rl_onnx
 - `projected_gravity_from_quat_xyzw(quat_xyzw) -> NDArray` — Isaac Lab \(R^\top [0,0,-1]\). (L236)
 - `build_rsl_rl_observation(...) -> NDArray` — Concatenate terms in YAML order after `joint_ids_map` gather. (L253)
 - `decode_rsl_rl_joint_position(raw, config) -> NDArray` — `default + raw * scale`, scatter to robot order. (L328)
-- `resolve_rsl_rl_onnx_assets(spec, *, extra, manifest) -> (Path, Path)` — Local dir or Hub `hf_hub_download` of `policy.onnx` (+ `.data`) and `params/deploy.yaml`. (L443)
-- `write_zero_action_onnx(path, *, observation_dim, action_dim) -> Path` — Deterministic fixture graph for CI (`make_policy` without Hub weights). (L497)
+- `resolve_rsl_rl_onnx_assets(spec, *, extra, manifest) -> (Path, Path)` — Local dir or Hub `hf_hub_download` of `policy.onnx` (+ `.data`) and `params/deploy.yaml`. (L436)
+- `write_zero_action_onnx(path, *, observation_dim, action_dim) -> Path` — Deterministic fixture graph for CI (`make_policy` without Hub weights). (L490)
 - `_RslRlOnnxAdapter` — `PolicyAdapter`; `step()` runs ONNX Runtime inside `inference_span(engine="onnx")`. (L365)
 - `_build_rsl_rl_onnx(env_cfg) -> _RslRlOnnxAdapter` — `@POLICIES.register("rsl_rl_onnx")` factory. (L405)
 

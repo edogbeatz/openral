@@ -406,14 +406,7 @@ def _build_rsl_rl_onnx(env_cfg: Any) -> _RslRlOnnxAdapter:
     """Load ``policy.onnx`` + ``params/deploy.yaml`` for ``model_family: rsl_rl_onnx``."""
     spec = env_cfg.vla
     extra = dict(getattr(spec, "extra", {}) or {})
-    # ``load_manifest_for_spec`` returns None for ``hf://`` URIs and raises
-    # when a local dir has no ``rskill.yaml`` (it would otherwise treat the
-    # path as a Hub repo id). Either case is fine: extras already live on
-    # ``VLASpec.extra`` from execute_rskill / sim CLI.
-    try:
-        manifest = load_manifest_for_spec(spec)
-    except ROSConfigError:
-        manifest = None
+    manifest = _optional_manifest(spec)
     if manifest is not None:
         extra = {**dict(manifest.policy_extras), **extra}
     onnx_path, deploy_path = resolve_rsl_rl_onnx_assets(spec, extra=extra, manifest=manifest)
@@ -550,6 +543,24 @@ def write_zero_action_onnx(path: Path | str, *, observation_dim: int, action_dim
 
 
 # ── internals ────────────────────────────────────────────────────────────────
+
+
+def _optional_manifest(spec: Any) -> RSkillManifest | None:
+    """Load a local rSkill manifest when one is actually on disk.
+
+    ``load_manifest_for_spec`` treats a bare path without ``rskill.yaml`` as
+    a Hub repo id and tries ``hf_hub_download``. A fixture directory that
+    only holds ``policy.onnx`` + ``params/deploy.yaml`` must not hit the
+    network. ``hf://`` URIs already return ``None``.
+    """
+    weights_uri = str(getattr(spec, "weights_uri", "") or "")
+    local = _local_weights_root(weights_uri)
+    if local is not None and not (local / "rskill.yaml").is_file():
+        return None
+    try:
+        return load_manifest_for_spec(spec)
+    except ROSConfigError:
+        return None
 
 
 def _local_weights_root(weights_uri: str) -> Path | None:
