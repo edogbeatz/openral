@@ -36,7 +36,13 @@ _RSKILLS_DIR = _REPO_ROOT / "rskills"
 # Weight licenses that are NOT fully permissive open source — the generated
 # SKILL.md surfaces a warning so a discovering agent does not assume free
 # commercial use. Mirrors RSkillLicensePosture semantics (third-party weights).
-_PERMISSIVE_WEIGHT_LICENSES = {"apache-2.0", "mit", "bsd-3-clause", "nvidia_open_model"}
+_PERMISSIVE_WEIGHT_LICENSES = {
+    "apache-2.0",
+    "mit",
+    "bsd",
+    "bsd-3-clause",
+    "nvidia_open_model",
+}
 
 _KIND_NOUN = {
     "vla": "Vision-Language-Action policy",

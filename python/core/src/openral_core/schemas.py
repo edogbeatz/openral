@@ -5926,6 +5926,7 @@ ModelFamily: TypeAlias = Literal[
     "lingbot_vla",
     "lingbot_va_a1",
     "internvla_n1",
+    "rsl_rl_onnx",
 ]
 """VLA / policy family the skill belongs to.
 
@@ -5980,6 +5981,14 @@ NavDP DiT System-1). Upstream InternNav pins ``transformers==4.51.0`` —
 incompatible with the workspace — so it runs out-of-process via the same ZMQ
 sidecar architecture as ``rldx``. The adapter consumes RGB-D + instruction
 and emits a 6-D ``BODY_TWIST`` velocity command for a mobile base.
+
+``rsl_rl_onnx`` is a proprio-only Isaac Lab / Unitree **rsl-rl ONNX**
+locomotion family (not a vision-language policy, and not SmolVLA). The
+adapter ``openral_sim.policies.rsl_rl_onnx`` loads ``policy.onnx`` plus
+the checkpoint's ``params/deploy.yaml``, builds the rsl-rl observation
+from HAL / world-state proprio + a ``policy_extras`` velocity command,
+and emits 12-D ``JOINT_POSITION`` targets. The reasoner prompt is **not**
+mapped to Isaac ``velocity_commands`` — see the rSkill README.
 """
 
 # Regexes pinned at module scope so error messages stay consistent and
@@ -7583,6 +7592,7 @@ CANONICAL_MODEL_TOKENS: frozenset[str] = frozenset(
         "lingbot_vla2",  # family lingbot_vla2
         "lingbot_va_a1",  # family lingbot_va_a1
         "internvla_n1",  # family internvla_n1 (InternVLA-N1 / DualVLN)
+        "rsl_rl_onnx",  # family rsl_rl_onnx (Isaac Lab / Unitree rsl-rl ONNX)
         # Non-VLA tool-model tokens (detector / segmenter / vlm / reward).
         "sam2_1",  # SAM 2.1 Hiera promptable segmenter
         "omdet_turbo",
@@ -7619,6 +7629,7 @@ _MODEL_FAMILY_TO_TOKEN: dict[str, str] = {
     "lingbot_vla2": "lingbot_vla2",
     "lingbot_va_a1": "lingbot_va_a1",
     "internvla_n1": "internvla_n1",
+    "rsl_rl_onnx": "rsl_rl_onnx",
 }
 """VLA ``ModelFamily`` → its canonical ``<model>`` *suggestion* token
 (the single token ``expected_repo_name`` proposes)."""
@@ -7640,6 +7651,7 @@ _MODEL_FAMILY_ALLOWED_TOKENS: dict[str, frozenset[str]] = {
     "lingbot_vla2": frozenset({"lingbot_vla2"}),
     "lingbot_va_a1": frozenset({"lingbot_va_a1"}),
     "internvla_n1": frozenset({"internvla_n1"}),
+    "rsl_rl_onnx": frozenset({"rsl_rl_onnx"}),
 }
 """The documented **family → allowed ``<model>`` tokens** map: when a manifest
 declares ``model_family``, the name's ``<model>`` segment must be one of these

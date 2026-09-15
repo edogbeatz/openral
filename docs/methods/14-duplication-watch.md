@@ -765,7 +765,7 @@ pattern in `tools/schema_export.py`.*
 
 26. **`load_manifest_for_spec` — one copy left, on purpose.** Ten adapters
     (`smolvla`, `pi05`, `gr00t`, `rldx`, `xr1`, `openvla`, `molmoact2`,
-    `lingbot_vla2`, `internvla_n1`, plus `_policy_loading` itself) call
+    `lingbot_vla2`, `internvla_n1`, `rsl_rl_onnx`, plus `_policy_loading` itself) call
     `policies/_policy_loading.load_manifest_for_spec`. `policies/act.py` keeps
     a private `_load_manifest_for_spec`, which `backends/libero.py` imports.
     The bodies differ in one reachable case: the shared version guards

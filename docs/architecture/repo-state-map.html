@@ -1247,6 +1247,15 @@ const LAYERS = [
         schemas: ["WorldState", "Action", "RSkillManifest", "VLASpec", "ModelFamily"],
       },
       {
+        title: "rsl-rl ONNX locomotion adapter (hackathon / Go2)",
+        pkg: "python/sim · policies/rsl_rl_onnx.py · rskills/rsl-rl-onnx-go2-velocity-flat",
+        status: "green",
+        desc: "NVIDIA hackathon. ModelFamily token `rsl_rl_onnx` (kind stays vla — not a new RSkillKind, not SmolVLA). In-process ONNX Runtime loader for Isaac Lab / Unitree rsl-rl exports: downloads `hf://…/policy.onnx` + `params/deploy.yaml`, builds the rsl-rl obs (base_ang_vel + projected_gravity + velocity_commands + joint_pos_rel + joint_vel_rel + last_action) from HAL/world-state proprio plus `policy_extras.velocity_commands` (reasoner prompt is not mapped to Isaac cmd), emits 12-D JOINT_POSITION (`default_joint_pos + action * scale`, joint_ids_map from the YAML). First customer: diasAiMaster/unitree-go2-velocity-flat. Unit-tested with a real fixture ONNX (tests/unit/test_rsl_rl_onnx_adapter.py). Does not claim gait quality. Go2 MuJoCo HAL / go2_bench still has gravity off and no IMU publication — documented gap.",
+        inputs: ["WorldState", "policy_extras.velocity_commands"],
+        outputs: ["Action (12-D JOINT_POSITION)"],
+        schemas: ["WorldState", "Action", "RSkillManifest", "VLASpec", "ModelFamily"],
+      },
+      {
         title: "TensorRTRuntime (OpenRAL Pro)",
         pkg: "openral-pro-trt (private repo)",
         status: "red",
