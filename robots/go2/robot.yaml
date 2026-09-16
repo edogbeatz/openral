@@ -263,9 +263,15 @@ sim:
   floating_base: true
   keyframe_index: 0
 
-# Collision geometry left empty this spike — `openral collision lower`
-# against the Go2 URDF/MJCF is a documented follow-up. The safety kernel
-# has no self-collision primitives until that lands.
+# Collision geometry left empty this spike — deploy still MJCF-lowers
+# self-collision capsules from the menagerie model. ACM rest-pose
+# excludes must use Hub `GO2_HOME_JOINT_TARGETS` (hip ±0.1, thigh 0.9,
+# calf −1.8), not q=0 and not menagerie keyframe hips 0.0. Pairs that
+# only overlap at that Hub stand (base↔calf, FL_thigh↔FR_thigh,
+# base↔thigh, calf↔non-same-leg thigh, calf↔non-same-leg hip) are
+# MoveIt-style always-in-collision excludes. Capsule ACM is
+# conservative — not a mesh or cert claim. Self-collision stays on
+# for every other pair.
 collision_geometry: []
 allowed_collision_pairs: []
 schema_version: '0.1'

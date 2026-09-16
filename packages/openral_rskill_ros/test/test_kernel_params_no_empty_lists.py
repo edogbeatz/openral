@@ -82,6 +82,35 @@ def test_attached_collision_is_enabled_only_for_sim_manager() -> None:
 
     assert module._attached_collision_enabled("sim") is True
     assert module._attached_collision_enabled("real") is False
+    assert module._attached_collision_enabled("sim", has_attachment_producer=False) is False
+    assert module._attached_collision_enabled("real", has_attachment_producer=True) is False
+
+
+def test_go2_has_no_attachment_producer() -> None:
+    """Quadruped spike has no gripper — attached-collision would false-overflow."""
+    from openral_core import RobotDescription
+
+    module = _import_launch_module(_LAUNCH_FILE)
+    go2 = RobotDescription.from_yaml(_REPO_ROOT / "robots" / "go2" / "robot.yaml")
+    arm = RobotDescription.from_yaml(_REPO_ROOT / "robots" / "so101_follower" / "robot.yaml")
+    assert module._has_attachment_producer(go2) is False
+    assert module._has_attachment_producer(arm) is True
+
+
+def test_go2_acm_seed_q_is_hub_home_not_menagerie_hips() -> None:
+    """#6 Hub hips ±0.1 must seed ACM; menagerie keyframe hip 0 misses thighs."""
+    from openral_core import RobotDescription
+    from openral_hal.go2 import GO2_HOME_JOINT_TARGETS
+
+    module = _import_launch_module(_LAUNCH_FILE)
+    go2 = RobotDescription.from_yaml(_REPO_ROOT / "robots" / "go2" / "robot.yaml")
+    arm = RobotDescription.from_yaml(_REPO_ROOT / "robots" / "so101_follower" / "robot.yaml")
+    seed = module._go2_hub_acm_seed_q(go2)
+    assert seed == [float(v) for v in GO2_HOME_JOINT_TARGETS]
+    assert seed[0] == pytest.approx(-0.1)
+    assert seed[3] == pytest.approx(0.1)
+    assert module._go2_hub_acm_seed_q(arm) is None
+    assert module._go2_hub_acm_seed_q(object()) is None
 
 
 def _make_launch_context(robot_yaml: Path) -> object:

@@ -490,6 +490,31 @@ class WorldStateAggregator:
             place_region=live_declaration is not None and live_declaration.region is not None,
         )
 
+    def seed_empty_attachments(self, stamp_ns: int) -> bool:
+        """Mark "nothing carried" as a live empty attachment set.
+
+        The C++ kernel fail-closes ``attachment_stamp_ns == 0`` as
+        ``DROP_ATTACHED_OVERFLOW`` (logged ``safety.world_unavailable
+        reason=attached_overflow``). That is the correct reading of a
+        missing producer stamp — not of a robot that never grasps.
+
+        Robots without ``/openral/attachment_state`` (no gripper, no
+        ``SimAttachedHAL.update_attached_objects``) would otherwise
+        drop every ``JOINT_POSITION`` chunk. An empty-but-fresh set is
+        the kernel's documented valid "nothing carried" state.
+
+        No-op if a producer has already set a stamp. ``stamp_ns`` must
+        be the attachment stream's clock (ROS / sim time). A zero sim
+        clock at t0 is stored as ``1`` so the kernel's ``> 0`` check
+        passes. Returns True when the empty set was seeded.
+        """
+        with self._lock:
+            if self._attachment_stamp_ns > 0:
+                return False
+        applied = stamp_ns if stamp_ns > 0 else 1
+        self.update_attached_objects([], revision=0, stamp_ns=applied)
+        return True
+
     def set_error(self, component: str, status: DiagStatus = "error") -> None:
         """Latch an explicit diagnostic status for a named component.
 

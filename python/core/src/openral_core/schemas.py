@@ -5927,6 +5927,7 @@ ModelFamily: TypeAlias = Literal[
     "lingbot_va_a1",
     "internvla_n1",
     "rsl_rl_onnx",
+    "zero",
 ]
 """VLA / policy family the skill belongs to.
 
@@ -7595,6 +7596,7 @@ CANONICAL_MODEL_TOKENS: frozenset[str] = frozenset(
         "lingbot_va_a1",  # family lingbot_va_a1
         "internvla_n1",  # family internvla_n1 (InternVLA-N1 / DualVLN)
         "rsl_rl_onnx",  # family rsl_rl_onnx (Isaac Lab / Unitree rsl-rl ONNX)
+        "zero",  # family zero — in-tree mock / scripted hold (openral_sim.policies.mock)
         # Non-VLA tool-model tokens (detector / segmenter / vlm / reward).
         "sam2_1",  # SAM 2.1 Hiera promptable segmenter
         "omdet_turbo",
@@ -7632,6 +7634,7 @@ _MODEL_FAMILY_TO_TOKEN: dict[str, str] = {
     "lingbot_va_a1": "lingbot_va_a1",
     "internvla_n1": "internvla_n1",
     "rsl_rl_onnx": "rsl_rl_onnx",
+    "zero": "zero",
 }
 """VLA ``ModelFamily`` → its canonical ``<model>`` *suggestion* token
 (the single token ``expected_repo_name`` proposes)."""
@@ -7654,6 +7657,7 @@ _MODEL_FAMILY_ALLOWED_TOKENS: dict[str, frozenset[str]] = {
     "lingbot_va_a1": frozenset({"lingbot_va_a1"}),
     "internvla_n1": frozenset({"internvla_n1"}),
     "rsl_rl_onnx": frozenset({"rsl_rl_onnx"}),
+    "zero": frozenset({"zero"}),
 }
 """The documented **family → allowed ``<model>`` tokens** map: when a manifest
 declares ``model_family``, the name's ``<model>`` segment must be one of these

@@ -8,8 +8,11 @@ runners without downloading any HF weights.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+import json
+import math
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -113,20 +116,79 @@ def _build_mock_scene(env_cfg: SimEnvironment) -> _MockSim:
     )
 
 
+def _float_list(value: object, *, n: int) -> list[float] | None:
+    if not isinstance(value, list) or len(value) != n:
+        return None
+    try:
+        return [float(item) for item in value]
+    except (TypeError, ValueError):
+        return None
+
+
+def _load_controller_json(spec: VLASpec) -> dict[str, Any]:
+    """Read ``controller.json`` next to a local rSkill package when present."""
+    extra = spec.extra or {}
+    explicit = extra.get("controller_json")
+    candidates: list[Path] = []
+    if isinstance(explicit, str) and explicit.strip():
+        candidates.append(Path(explicit))
+    uri = str(getattr(spec, "weights_uri", "") or "")
+    if uri:
+        root = Path(uri)
+        candidates.append(root / "controller.json")
+        if root.name == "controller.json":
+            candidates.append(root)
+        parent = root.parent
+        candidates.append(parent / "controller.json")
+    for path in candidates:
+        if path.is_file():
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            return raw if isinstance(raw, dict) else {}
+    return {}
+
+
 @dataclass
 class _ZeroPolicy:
-    """Always emits zero-vector actions of the configured size."""
+    """N-D scripted hold (optional trot). Defaults to zeros when no targets.
+
+    In-tree factory key ``zero``. Used by unit tests and by Acquire's
+    12-DoF Go2 locomotion rSkill (menagerie home + small diagonal trot).
+    Not a learned VLA — ``hold_targets`` / ``gait`` come from
+    ``VLASpec.extra`` (manifest ``policy_extras``) or ``controller.json``.
+    """
 
     spec: VLASpec
     device: str
     action_dim: int = _MOCK_ACTION_DIM
+    hold_targets: NDArray[np.float32] | None = None
+    gait: str = "hold"
+    gait_amp: float = 0.0
+    gait_hz: float = 1.5
+    dt: float = 1.0 / 30.0
+    _tick: int = field(default=0)
 
     def reset(self) -> None:
-        return None
+        self._tick = 0
 
     def step(self, observation: Observation, instruction: str) -> NDArray[np.float32]:
         del observation, instruction
-        return np.zeros(self.action_dim, dtype=np.float32)
+        self._tick += 1
+        if self.hold_targets is not None:
+            action = np.array(self.hold_targets, dtype=np.float32, copy=True)
+        else:
+            action = np.zeros(self.action_dim, dtype=np.float32)
+        if self.gait == "trot" and self.gait_amp and action.shape[0] >= 12:
+            phase = 2.0 * math.pi * self.gait_hz * float(self._tick) * self.dt
+            delta = float(self.gait_amp) * math.sin(phase)
+            action[1] += delta
+            action[10] += delta
+            action[4] -= delta
+            action[7] -= delta
+            action[2] -= 0.5 * delta
+            action[11] -= 0.5 * delta
+            action[5] += 0.5 * delta
+            action[8] += 0.5 * delta
+        return action
 
     def close(self) -> None:
         return None
@@ -198,12 +260,39 @@ _SCENE_DEFAULT_ACTION_DIM: dict[str, int] = {
 }
 
 
+def _resolve_hold(env_cfg: SimEnvironment, action_dim: int) -> tuple[NDArray[np.float32] | None, str, float, float, float]:
+    extra = env_cfg.vla.extra or {}
+    file_cfg = _load_controller_json(env_cfg.vla)
+    hold = _float_list(extra.get("hold_targets"), n=action_dim)
+    if hold is None:
+        hold = _float_list(file_cfg.get("hold_targets"), n=action_dim)
+    gait = str(extra.get("gait") or file_cfg.get("gait") or "hold")
+    gait_amp = float(extra.get("gait_amp") if extra.get("gait_amp") is not None else file_cfg.get("gait_amp") or 0.0)
+    gait_hz = float(extra.get("gait_hz") if extra.get("gait_hz") is not None else file_cfg.get("gait_hz") or 1.5)
+    dt = float(extra.get("dt") if extra.get("dt") is not None else file_cfg.get("dt") or (1.0 / 30.0))
+    targets = np.asarray(hold, dtype=np.float32) if hold is not None else None
+    return targets, gait, gait_amp, gait_hz, dt
+
+
 @POLICIES.register("zero")
 def _build_zero_policy(env_cfg: SimEnvironment) -> _ZeroPolicy:
+    action_dim = _resolve_action_dim(env_cfg)
+    extra = env_cfg.vla.extra or {}
+    file_cfg = _load_controller_json(env_cfg.vla)
+    if extra.get("action_dim") is None and file_cfg.get("n_dof") is not None:
+        action_dim = _coerce_int(file_cfg.get("n_dof"), action_dim)
+    hold, gait, gait_amp, gait_hz, dt = _resolve_hold(env_cfg, action_dim)
+    if hold is not None:
+        action_dim = int(hold.shape[0])
     return _ZeroPolicy(
         spec=env_cfg.vla,
         device="cpu",
-        action_dim=_resolve_action_dim(env_cfg),
+        action_dim=action_dim,
+        hold_targets=hold,
+        gait=gait,
+        gait_amp=gait_amp,
+        gait_hz=gait_hz,
+        dt=dt,
     )
 
 

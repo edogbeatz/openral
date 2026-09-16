@@ -497,9 +497,12 @@ if _ROS2_AVAILABLE:
                 )
             if self._heartbeat is not None:
                 self._heartbeat.start()  # type: ignore[union-attr]
+            seeded = self._seed_empty_attachments()
             self.get_logger().info(
                 f"WorldState publishing fast={fast_hz:.1f} Hz, "
-                f"slow={slow_hz:.1f} Hz (divider={self._slow_divider}).",
+                f"slow={slow_hz:.1f} Hz (divider={self._slow_divider})"
+                + ("; empty-but-fresh attachments seeded" if seeded else "")
+                + ".",
             )
             return TransitionCallbackReturn.SUCCESS
 
@@ -562,6 +565,21 @@ if _ROS2_AVAILABLE:
         def on_shutdown(self, state: object) -> TransitionCallbackReturn:
             """Force cleanup on shutdown."""
             return self.on_cleanup(state)
+
+        def _seed_empty_attachments(self) -> bool:
+            """Advertise empty-but-fresh attachments when no producer has spoken.
+
+            The kernel treats ``attachment_stamp_ns == 0`` as overflow, not
+            "nothing carried". Seed once from the ROS / sim clock so a
+            gripper-less robot (go2) does not drop every candidate action.
+            """
+            if self._aggregator is None:
+                return False
+            seed = getattr(self._aggregator, "seed_empty_attachments", None)
+            if not callable(seed):
+                return False
+            stamp_ns = int(self.get_clock().now().nanoseconds)
+            return bool(seed(stamp_ns))
 
         def _direct_image_frame_sensors(self) -> set[str]:
             """Cameras the co-located sensor leg feeds straight to the aggregator.

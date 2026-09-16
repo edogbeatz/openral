@@ -171,31 +171,89 @@ def _seg_seg_distance(p1: _Vec, q1: _Vec, p2: _Vec, q2: _Vec) -> float:
     return math.sqrt(sum((c1[i] - c2[i]) ** 2 for i in range(3)))
 
 
-def _neutral_pose_collisions(params: dict[str, object], threshold: float) -> list[tuple[int, int]]:
-    """Pairs whose capsules already overlap at the neutral (all-zero) pose.
+def _axis_angle_mat(axis: _Vec, angle: float) -> _Vec:
+    """Rodrigues rotation about ``axis`` by ``angle``, row-major 3x3.
 
-    Mirrors the MoveIt setup-assistant "disable always-in-collision pairs" step,
-    using the kernel's own conservative capsule approximation so the resulting
-    allowed-collision matrix matches what the kernel actually sees.
+    Matches the C++ kernel ``axis_angle`` used by ``forward_kinematics``.
+    """
+    x, y, z = axis[0], axis[1], axis[2]
+    norm = math.sqrt(x * x + y * y + z * z) or 1.0
+    x, y, z = x / norm, y / norm, z / norm
+    c, s = math.cos(angle), math.sin(angle)
+    one_c = 1.0 - c
+    return [
+        c + x * x * one_c,
+        x * y * one_c - z * s,
+        x * z * one_c + y * s,
+        y * x * one_c + z * s,
+        c + y * y * one_c,
+        y * z * one_c - x * s,
+        z * x * one_c - y * s,
+        z * y * one_c + x * s,
+        c + z * z * one_c,
+    ]
+
+
+def _fk_link_frames(
+    params: dict[str, object], q: list[float] | None
+) -> tuple[list[_Vec], list[_Vec]]:
+    """Per-link world frames, matching the kernel ``forward_kinematics``.
+
+    ``local = compose(origin, motion(q[dof]))`` then
+    ``world = compose(parent, local)``. ``q is None`` / missing dofs are 0
+    (identity motion) — the historical all-zero rest pose.
     """
     n = cast(int, params["collision_n_links"])
     parent = cast("list[int]", params["collision_parent"])
     origin = cast(_Vec, params["collision_origin_xyzrpy"])
-    cap_link = cast("list[int]", params["collision_capsule_link"])
-    cap_r = cast(_Vec, params["collision_capsule_radius"])
-    cap_h = cast(_Vec, params["collision_capsule_half_length"])
-    cap_o = cast(_Vec, params["collision_capsule_origin_xyzrpy"])
-    # Forward kinematics at q=0 (joint motion is identity) → per-link frames.
+    joint_kind = cast("list[int]", params["collision_joint_kind"])
+    dof_index = cast("list[int]", params["collision_dof_index"])
+    axis = cast(_Vec, params["collision_axis"])
+    seed = q or []
+    identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
     link_r: list[_Vec] = [[] for _ in range(n)]
     link_t: list[_Vec] = [[] for _ in range(n)]
     for i in range(n):
         o = origin[6 * i : 6 * i + 6]
-        r, t = _rpy_to_mat(o[3], o[4], o[5]), list(o[:3])
+        r_fixed, t_fixed = _rpy_to_mat(o[3], o[4], o[5]), list(o[:3])
+        motion_r, motion_t = list(identity), [0.0, 0.0, 0.0]
+        dof = int(dof_index[i])
+        if 0 <= dof < len(seed):
+            qi = float(seed[dof])
+            ax = axis[3 * i : 3 * i + 3]
+            kind = int(joint_kind[i])
+            if kind == 1:  # revolute
+                motion_r = _axis_angle_mat(ax, qi)
+            elif kind == 2:  # prismatic
+                motion_t = [ax[k] * qi for k in range(3)]
+        r, t = _compose(r_fixed, t_fixed, motion_r, motion_t)
         p = parent[i]
         if p >= 0:
             r, t = _compose(link_r[p], link_t[p], r, t)
         link_r[i], link_t[i] = r, t
-    # Place each capsule's segment endpoints in the base frame.
+    return link_r, link_t
+
+
+def _rest_pose_collisions(
+    params: dict[str, object], threshold: float, q: list[float] | None = None
+) -> list[tuple[int, int]]:
+    """Pairs whose capsules already overlap at the rest / spawn pose.
+
+    Mirrors the MoveIt setup-assistant "disable always-in-collision pairs" step,
+    using the kernel's own conservative capsule approximation so the resulting
+    allowed-collision matrix matches what the kernel actually sees.
+
+    ``q`` is the actuated vector in manifest / ``collision_dof_index`` order.
+    Go2's valid stand is menagerie keyframe 0 (thigh 0.9, calf −1.8), not
+    all-zeros — calf range excludes 0. ACM seeded at q=0 misses the crouched
+    base↔calf capsule overlap the kernel then estops at tick 2
+    (``sim.estop_initial_configuration``).
+    """
+    cap_link = cast("list[int]", params["collision_capsule_link"])
+    cap_r = cast(_Vec, params["collision_capsule_radius"])
+    cap_h = cast(_Vec, params["collision_capsule_half_length"])
+    cap_o = cast(_Vec, params["collision_capsule_origin_xyzrpy"])
+    link_r, link_t = _fk_link_frames(params, q)
     n_caps = len(cap_link)
     cap_endpoints: list[tuple[_Vec, _Vec]] = []
     for c in range(n_caps):
@@ -207,8 +265,6 @@ def _neutral_pose_collisions(params: dict[str, object], threshold: float) -> lis
         cap_endpoints.append(
             ([ct[k] - z_axis[k] * h for k in range(3)], [ct[k] + z_axis[k] * h for k in range(3)])
         )
-    # Any two capsules on different links overlapping at rest → disable that
-    # whole link pair (dedup; the kernel's ACM is link-level).
     extra: set[tuple[int, int]] = set()
     for i in range(n_caps):
         for j in range(i + 1, n_caps):
@@ -220,6 +276,86 @@ def _neutral_pose_collisions(params: dict[str, object], threshold: float) -> lis
             if dist <= threshold:
                 extra.add((min(cap_link[i], cap_link[j]), max(cap_link[i], cap_link[j])))
     return sorted(extra)
+
+
+def _neutral_pose_collisions(params: dict[str, object], threshold: float) -> list[tuple[int, int]]:
+    """Pairs overlapping at q=0. Prefer ``_rest_pose_collisions`` with a seed q."""
+    return _rest_pose_collisions(params, threshold, q=None)
+
+
+def _as_scalar(value: object) -> float:
+    """``float()`` a numpy scalar / length-1 array without TypeError.
+
+    MuJoCo ``MjModel.key_qpos`` is ``(nkey, nq)``. Slicing it as a flat
+    buffer yields rows; ``float(row)`` raises
+    ``TypeError: only length-1 arrays can be converted to Python scalars``
+    (newer NumPy: ``only 0-dimensional arrays…``). That abort left ACM
+    unseeded and the verify scraper set ``safety_self_collision`` from the
+    lowering traceback — not a mid-run estop.
+    """
+    if hasattr(value, "reshape"):
+        flat = value.reshape(-1)
+        if int(getattr(flat, "size", len(flat))) != 1:
+            raise TypeError(
+                f"expected a scalar key_qpos entry, got shape "
+                f"{getattr(value, 'shape', None)}"
+            )
+        return float(flat[0])
+    return float(value)
+
+
+def _keyframe_qpos(model: Any, *, keyframe_index: int) -> list[float]:
+    """Keyframe qpos as a flat ``nq`` list. Accepts 1-D or 2-D ``key_qpos``."""
+    nq = int(model.nq)
+    raw = getattr(model, "key_qpos", None)
+    if raw is None or nq <= 0:
+        return []
+    try:
+        import numpy as np
+
+        arr = np.asarray(raw, dtype=float)
+    except Exception:  # reason: numpy optional at import; fall back to list
+        arr = None
+    if arr is not None and getattr(arr, "ndim", 0) == 2:
+        if keyframe_index >= int(arr.shape[0]):
+            return [0.0] * nq
+        return [_as_scalar(v) for v in arr[keyframe_index]]
+    start = keyframe_index * nq
+    seq = raw[start : start + nq]
+    return [_as_scalar(v) for v in seq]
+
+
+def _actuated_q_from_keyframe(
+    model: Any, n_cols: int, *, keyframe_index: int = 0
+) -> list[float]:
+    """Actuated q in movable-joint (body) order from ``model`` keyframe.
+
+    Same ordinal as ``collision_dof_index`` assignment: the i-th hinge/slide
+    joint maps to column ``i``. Missing keyframe → zeros (historical default).
+    """
+    q = [0.0] * n_cols
+    if n_cols <= 0 or int(getattr(model, "nkey", 0)) <= keyframe_index:
+        return q
+    import mujoco as mj
+
+    qpos = _keyframe_qpos(model, keyframe_index=keyframe_index)
+    next_dof = 0
+    for body in range(1, int(model.nbody)):
+        kind, _axis = _body_joint(mj, model, body)
+        if kind == 0:
+            continue
+        if next_dof < n_cols:
+            for ji in range(int(model.njnt)):
+                if int(model.jnt_bodyid[ji]) != body:
+                    continue
+                jtype = int(model.jnt_type[ji])
+                if jtype in (int(mj.mjtJoint.mjJNT_HINGE), int(mj.mjtJoint.mjJNT_SLIDE)):
+                    adr = int(_as_scalar(model.jnt_qposadr[ji]))
+                    if 0 <= adr < len(qpos):
+                        q[next_dof] = qpos[adr]
+                    break
+        next_dof += 1
+    return q
 
 
 def _body_joint(mj: Any, model: Any, body: int) -> tuple[int, _Vec]:
@@ -268,7 +404,12 @@ def _static_allowed_pairs(
 
 
 def lower_collision_params(
-    model: Any, joint_names: list[str], *, margin_m: float = 0.0
+    model: Any,
+    joint_names: list[str],
+    *,
+    margin_m: float = 0.0,
+    seed_q: list[float] | None = None,
+    keyframe_index: int = 0,
 ) -> dict[str, object]:
     """Lower a compiled MuJoCo model to safety-kernel collision ROS parameters.
 
@@ -278,6 +419,11 @@ def lower_collision_params(
             the ``ActionChunk.flat`` joint vector uses. Each entry is matched to
             a MuJoCo hinge/slide joint by name to assign that link's ``dof_index``.
         margin_m: Clearance margin in metres (a pair closer than this fires).
+        seed_q: Optional actuated rest pose for ACM "always-in-collision"
+            excludes. When omitted, keyframe ``keyframe_index`` is used (Go2
+            menagerie ``home``), else zeros. Self-collision stays on for pairs
+            that only overlap away from this stand.
+        keyframe_index: MJCF keyframe used when ``seed_q`` is omitted.
 
     Returns:
         The ``collision_*`` ROS-parameter dict to merge with the scalar envelope
@@ -373,11 +519,18 @@ def lower_collision_params(
         "collision_link_names": link_names,
     }
     # Disable pairs already overlapping (per the kernel's conservative capsules)
-    # at the neutral pose — they carry no information and would only false-fire.
+    # at the rest / spawn pose — they carry no information and would only
+    # false-fire. Use the model's keyframe (Go2 home) rather than q=0: calves
+    # cannot rest at 0 and the crouched stand overlaps base↔calf capsules.
     existing = {
         (min(a, b), max(a, b)) for a, b in zip(allowed_pairs[::2], allowed_pairs[1::2], strict=True)
     }
-    for a, b in _neutral_pose_collisions(params, margin_m):
+    rest_q = (
+        [float(v) for v in seed_q]
+        if seed_q is not None
+        else _actuated_q_from_keyframe(model, n_cols, keyframe_index=keyframe_index)
+    )
+    for a, b in _rest_pose_collisions(params, margin_m, rest_q):
         if (a, b) not in existing:
             allowed_pairs.extend([a, b])
             existing.add((a, b))

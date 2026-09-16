@@ -315,9 +315,47 @@ def _octomap_coverage_radius() -> float:
     return 1.05
 
 
-def _attached_collision_enabled(hal_mode: str) -> bool:
-    """Enable payload collision only where the sim attachment manager exists."""
-    return hal_mode == "sim"
+def _has_attachment_producer(description: object) -> bool:
+    """True when this robot can publish ``/openral/attachment_state``.
+
+    Sim arms expose ``SimAttachedHAL.update_attached_objects`` and the
+    sensor bridge heartbeats an empty-or-grasped set. A quadruped with
+    ``end_effectors: []`` never starts that publisher. Enabling the
+    kernel's attached-collision gate then fail-closes every WorldState
+    snapshot as ``DROP_ATTACHED_OVERFLOW`` (``attachment_stamp_ns``
+    stays 0) and drops scripted ``JOINT_POSITION``.
+    """
+    end_effectors = getattr(description, "end_effectors", None) or ()
+    if end_effectors:
+        return True
+    caps = getattr(description, "capabilities", None)
+    return bool(caps is not None and getattr(caps, "has_dexterous_hands", False))
+
+
+def _attached_collision_enabled(
+    hal_mode: str, *, has_attachment_producer: bool = True
+) -> bool:
+    """Enable payload collision only where a sim attachment producer exists."""
+    return hal_mode == "sim" and has_attachment_producer
+
+
+def _go2_hub_acm_seed_q(description: object) -> list[float] | None:
+    """Hub ``default_joint_pos`` for Go2 ACM rest-pose excludes.
+
+    OpenRAL #6 snaps HAL spawn to hip ±0.1. MJCF keyframe 0 is menagerie
+    hip 0.0. Seeding ACM at the keyframe misses FL_thigh↔FR_thigh capsule
+    overlap (~2 cm), base↔RR_thigh (~1.4 mm), FR_calf↔RR_thigh
+    (~6 mm), and FR_calf↔RR_hip (~19 mm) plus the rest of the
+    Hub-stand skip set. The kernel then estops
+    ``initial_configuration`` and/or logs ``safety.collision`` at
+    step=0.
+    Non-Go2 descriptions return None (keyframe / zeros).
+    """
+    if str(getattr(description, "name", "")).lower() != "go2":
+        return None
+    from openral_hal.go2 import GO2_HOME_JOINT_TARGETS
+
+    return [float(v) for v in GO2_HOME_JOINT_TARGETS]
 
 
 def _autostart_lifecycle(node: LifecycleNode, node_name: str) -> list:
@@ -1044,7 +1082,16 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 description.assets.mjcf, "mjcf", manifest_dir=pathlib.Path(robot_yaml).parent
             )
             model = mujoco.MjModel.from_xml_path(str(_mjcf_path))
-            mjcf_params = lower_collision_params(model, [j.name for j in description.joints])
+            seed_q = _go2_hub_acm_seed_q(description)
+            mjcf_params = lower_collision_params(
+                model, [j.name for j in description.joints], seed_q=seed_q
+            )
+            if seed_q is not None:
+                print(
+                    "[deploy_e2e] ACM rest-pose seed_q=Hub GO2_HOME_JOINT_TARGETS "
+                    f"(FL_hip={seed_q[0]:+.2f} FR_hip={seed_q[3]:+.2f})",
+                    flush=True,
+                )
             # Only override the manifest model when the MJCF actually yields a
             # self-collision model. MJCFs whose collision geoms are meshes (e.g.
             # bimanual openarm) lower to {"self_collision_enabled": False}; using
@@ -1128,7 +1175,9 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # observability), but the kernel voxel check stays off so the kernel configures cleanly on
     # its scalar envelope.
     has_collision_capsules = int(collision_params.get("collision_n_links", 0)) > 0
-    if has_collision_capsules and _attached_collision_enabled(hal_mode):
+    if has_collision_capsules and _attached_collision_enabled(
+        hal_mode, has_attachment_producer=_has_attachment_producer(description)
+    ):
         kernel_params = {
             **kernel_params,
             "attached_collision_enabled": True,

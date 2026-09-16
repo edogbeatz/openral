@@ -41,6 +41,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import structlog
+from openral_rskill_ros.scripted_horizon import (
+    optional_positive_float,
+    optional_positive_int,
+    scripted_horizon_done,
+)
 from openral_runner.dataset_recorder_bridge import _sensor_name_to_slot as _sensor_name_to_vla_slot
 
 if TYPE_CHECKING:
@@ -2964,7 +2969,12 @@ def _make_policy_adapter_skill(
     2. ``tf_lookup`` + ``state_contract.layout`` — see above.
     """
     import numpy as np
-    from openral_core.exceptions import ROSConfigError, ROSPerceptionStale, ROSRuntimeError
+    from openral_core.exceptions import (
+        ROSConfigError,
+        ROSPerceptionStale,
+        ROSRskillGoalSatisfied,
+        ROSRuntimeError,
+    )
     from openral_core.schemas import Action, ControlMode
     from openral_rskill.base import rSkillBase
 
@@ -3029,7 +3039,9 @@ def _make_policy_adapter_skill(
         f"(manifest) "
         f"perm={robot_to_policy} "
         f"is_gripper={policy_is_gripper} "
-        f"gripper_scale={policy_gripper_scale:g}",
+        f"gripper_scale={policy_gripper_scale:g} "
+        f"horizon_s={optional_positive_float((getattr(manifest, 'policy_extras', None) or {}).get('horizon_s'))} "
+        f"horizon_ticks={optional_positive_int((getattr(manifest, 'policy_extras', None) or {}).get('horizon_ticks'))}",
         file=sys.stderr,
         flush=True,
     )
@@ -3081,6 +3093,11 @@ def _make_policy_adapter_skill(
             self._adapter = adapter
             self._prompt = prompt
             self._velocity_commands_override: list[float] | None = None
+            extras = getattr(manifest, "policy_extras", None) or {}
+            self._horizon_s = optional_positive_float(extras.get("horizon_s"))
+            self._horizon_ticks = optional_positive_int(extras.get("horizon_ticks"))
+            self._horizon_started: float | None = None
+            self._horizon_ticks_ran = 0
             # Hold the full manifest so the F1 skill_runner can read
             # fields the rSkillBase ABC doesn't expose (e.g.
             # ``starting_pose`` for the HAL ResetToPose call before
@@ -3157,6 +3174,8 @@ def _make_policy_adapter_skill(
 
         def _activate_impl(self) -> None:
             """Reset the adapter's per-episode state (action queue, RNG)."""
+            self._horizon_started = None
+            self._horizon_ticks_ran = 0
             if hasattr(self._adapter, "reset"):
                 self._adapter.reset()  # type: ignore[attr-defined]
 
@@ -3238,6 +3257,21 @@ def _make_policy_adapter_skill(
         def _step_impl(  # noqa: PLR0912, PLR0915  # reason: linear policy observation/action boundary with one branch per supported state/action contract
             self, world_state: Any
         ) -> Action | list[Action]:
+            if self._horizon_started is None:
+                self._horizon_started = time.monotonic()
+            self._horizon_ticks_ran += 1
+            elapsed_s = time.monotonic() - self._horizon_started
+            if scripted_horizon_done(
+                ticks=self._horizon_ticks_ran,
+                elapsed_s=elapsed_s,
+                horizon_ticks=self._horizon_ticks,
+                horizon_s=self._horizon_s,
+            ):
+                raise ROSRskillGoalSatisfied(
+                    f"scripted horizon complete ticks={self._horizon_ticks_ran} "
+                    f"elapsed_s={elapsed_s:.2f} "
+                    f"horizon_s={self._horizon_s} horizon_ticks={self._horizon_ticks}"
+                )
             obs: dict[str, object] = {"task": self._prompt}
             js = world_state.joint_state
             robot_state = np.asarray(list(js.position), dtype=np.float32)

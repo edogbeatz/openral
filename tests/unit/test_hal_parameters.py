@@ -125,3 +125,21 @@ class TestBuildHalThreadsManifestDefaults:
         hal = build_hal(desc, mode="real")
         assert isinstance(hal, SO100FollowerHAL)
         assert hal._port == "/dev/ttyMANIFEST0"
+
+    def test_go2_transport_can_enable_gravity(self) -> None:
+        """Scene ``hal.defaults.gravity_enabled: true`` wins over robot.yaml False.
+
+        Go2 pipe (``go2_bench``) stays gravity-off via the manifest default.
+        A loco / velocity-flat DeployScene threads True through ``build_hal``
+        transport. Construction only — does not claim skill_ran or gait.
+        """
+        from openral_hal.go2 import Go2MujocoHAL
+
+        desc = _load("go2")
+        assert desc.hal.parameters.defaults.get("gravity_enabled") is False
+        off = build_hal(desc, mode="sim")
+        assert isinstance(off, Go2MujocoHAL)
+        assert off._gravity_enabled is False
+        on = build_hal(desc, mode="sim", transport={"gravity_enabled": True})
+        assert isinstance(on, Go2MujocoHAL)
+        assert on._gravity_enabled is True

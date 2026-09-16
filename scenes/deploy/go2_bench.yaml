@@ -17,6 +17,55 @@
 # `deploy run` is refused (`hal.real` is null). No walking policy, no
 # Go2 Edu extras. Every perception/nav leg is off: the bare twin has no
 # lidar/depth and this bench is a HAL pipe proof, not a VLA rollout.
+#
+# Home-stand ACM: MJCF-lowered capsules are conservative (not a mesh /
+# cert claim). At menagerie `home` (thigh 0.9, calf −1.8) they overlap
+# base↔calf and hip↔calf. OpenRAL #6 snaps hips to Hub ±0.1, which also
+# admits FL_thigh↔FR_thigh, base↔thigh, the full calf↔non-same-leg
+# thigh set, and the full calf↔non-same-leg hip set (SimOps after #33:
+# FR_calf↔RR_hip ≈ −18.8 mm). HAL spawn / ACM seed_q must match Hub
+# `GO2_HOME_JOINT_TARGETS`. These extras are home-stand admits only.
+# Self-collision stays ON for every other pair. Not a disable-all-safety
+# flag. Not a skill_ran / gait claim.
+extra_allowed_collision_pairs:
+  - [base, FL_calf]
+  - [base, FR_calf]
+  - [base, RL_calf]
+  - [base, RR_calf]
+  - [FL_hip, FL_calf]
+  - [FR_hip, FR_calf]
+  - [RL_hip, RL_calf]
+  - [RR_hip, RR_calf]
+  - [FL_thigh, FR_thigh]
+  - [RL_thigh, RR_thigh]
+  - [base, FL_thigh]
+  - [base, FR_thigh]
+  - [base, RL_thigh]
+  - [base, RR_thigh]
+  - [FL_calf, FR_thigh]
+  - [FL_calf, RL_thigh]
+  - [FL_calf, RR_thigh]
+  - [FR_calf, FL_thigh]
+  - [FR_calf, RL_thigh]
+  - [FR_calf, RR_thigh]
+  - [RL_calf, FL_thigh]
+  - [RL_calf, FR_thigh]
+  - [RL_calf, RR_thigh]
+  - [RR_calf, FL_thigh]
+  - [RR_calf, FR_thigh]
+  - [RR_calf, RL_thigh]
+  - [FL_calf, FR_hip]
+  - [FL_calf, RL_hip]
+  - [FL_calf, RR_hip]
+  - [FR_calf, FL_hip]
+  - [FR_calf, RL_hip]
+  - [FR_calf, RR_hip]
+  - [RL_calf, FL_hip]
+  - [RL_calf, FR_hip]
+  - [RL_calf, RR_hip]
+  - [RR_calf, FL_hip]
+  - [RR_calf, FR_hip]
+  - [RR_calf, RL_hip]
 scene:
   id: go2_bench
 robot_id: go2

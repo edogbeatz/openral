@@ -209,6 +209,24 @@ def test_aggregator_replaces_multiple_attachments_atomically() -> None:
     assert aggregator.snapshot().attached_objects == []
 
 
+def test_aggregator_seeds_empty_but_fresh_attachments() -> None:
+    """stamp_ns==0 is kernel attached_overflow; empty+fresh is 'nothing carried'."""
+    aggregator = WorldStateAggregator(RobotDescription.from_yaml(_ROBOT_YAML))
+
+    assert aggregator.snapshot().attachment_stamp_ns == 0
+    assert aggregator.seed_empty_attachments(0) is True
+    first = aggregator.snapshot()
+    assert first.attached_objects == []
+    assert first.attachment_stamp_ns == 1
+    assert first.attachment_revision == 0
+
+    assert aggregator.seed_empty_attachments(99_000_000) is False
+    assert aggregator.snapshot().attachment_stamp_ns == 1
+
+    aggregator.update_attached_objects([], revision=1, stamp_ns=123_000_000)
+    assert aggregator.snapshot().attachment_stamp_ns == 123_000_000
+
+
 def test_aggregator_rejects_duplicate_attachment_ids() -> None:
     aggregator = WorldStateAggregator(RobotDescription.from_yaml(_ROBOT_YAML))
 

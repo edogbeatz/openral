@@ -125,9 +125,14 @@ Real hardware (`deploy run`) is refused until `hal.real` is filled in.
   `base_twist` for rsl-rl obs via `/odom`; no `mobile_base` tag until a
   cmd_vel contract exists).
 - No real HAL (`hal.real` is null).
-- No collision geometry / ACM (`openral collision lower` not run).
-  When that lands, ACM rest should use Hub `default_joint_pos` /
-  `GO2_HOME_JOINT_TARGETS` (hip ±0.1), not menagerie hip 0.0.
+- No authored collision geometry / ACM (`openral collision lower` not run).
+  Deploy may still MJCF-lower self-collision capsules. ACM rest should
+  use Hub `default_joint_pos` / `GO2_HOME_JOINT_TARGETS` (hip ±0.1),
+  not menagerie hip 0.0. Attached-payload collision stays **off**:
+  this robot has no end-effector and never publishes
+  `/openral/attachment_state`. Enabling that gate fail-closes every
+  WorldState snapshot as `DROP_ATTACHED_OVERFLOW`
+  (`attachment_stamp_ns == 0`) and drops scripted `JOINT_POSITION`.
 - Front-camera intrinsics are nominal, not calibrated.
 - Hardware radar / Go2 Edu cameras / compute are undeclared.
 - `openral detect` does not distinguish Go2 from G1/H1 on DDS.
