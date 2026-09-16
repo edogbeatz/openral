@@ -31,12 +31,13 @@ knows which.
 from __future__ import annotations
 
 import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from openral_core.assets import AssetRefError, resolve_asset
 from openral_core.exceptions import ROSConfigError
 
-__all__ = ["compose_ground_plane_mjcf"]
+__all__ = ["compose_ground_plane_mjcf", "compose_mounted_arm_mjcf"]
 
 # Matches a plane geom that is NOT disabled for contacts. The camera rig's
 # staging floor carries `contype="0" conaffinity="0"`, so a naive
@@ -115,30 +116,54 @@ def compose_ground_plane_mjcf(
         >>> 'name="openral_ground"' in xml  # doctest: +SKIP
         True
     """
-    # `AssetRefError` is translated here, matching `_mujoco_arm._resolve_mjcf`:
-    # this composer is called by the HAL lifecycle node, and only `ROSError`
-    # subclasses are meant to cross that boundary.
-    try:
-        resolved = resolve_asset(mjcf_ref, "mjcf")
-    except AssetRefError as exc:
-        raise ROSConfigError(
-            f"compose_ground_plane_mjcf: mjcf_ref {mjcf_ref!r} did not resolve to a file ({exc})"
-        ) from exc
-    if resolved is None or not Path(resolved).is_file():
-        raise ROSConfigError(
-            f"compose_ground_plane_mjcf: mjcf_ref {mjcf_ref!r} did not resolve to a file "
-            f"(got {resolved!r}); expected an `rd:` / `file:` / `menagerie:` MJCF reference."
-        )
-    path = Path(resolved)
+    path = _resolve_mjcf(mjcf_ref)
     xml = path.read_text()
     # Meshes resolve against the model's own directory (menagerie models
     # declare `<compiler meshdir="assets"/>`), and the node writes the composed
     # file to `meshdir.parent` — i.e. back alongside the original model.
     meshdir = path.parent / "assets"
 
-    if _has_collidable_plane(xml):
-        return xml, meshdir
+    return _stage_ground(
+        xml,
+        friction=friction,
+        half_extent_m=half_extent_m,
+        grid_spacing_m=grid_spacing_m,
+        source=str(path),
+    ), meshdir
 
+
+def _resolve_mjcf(mjcf_ref: str) -> Path:
+    """Resolve an MJCF asset reference to a file, as a ``ROSError`` on failure.
+
+    ``AssetRefError`` is translated here, matching ``_mujoco_arm._resolve_mjcf``:
+    these composers are called by the HAL lifecycle node, and only ``ROSError``
+    subclasses are meant to cross that boundary.
+    """
+    try:
+        resolved = resolve_asset(mjcf_ref, "mjcf")
+    except AssetRefError as exc:
+        raise ROSConfigError(
+            f"scene_composers: mjcf_ref {mjcf_ref!r} did not resolve to a file ({exc})"
+        ) from exc
+    if resolved is None or not Path(resolved).is_file():
+        raise ROSConfigError(
+            f"scene_composers: mjcf_ref {mjcf_ref!r} did not resolve to a file "
+            f"(got {resolved!r}); expected an `rd:` / `file:` / `menagerie:` MJCF reference."
+        )
+    return Path(resolved)
+
+
+def _stage_ground(
+    xml: str,
+    *,
+    friction: tuple[float, float, float] = (1.0, 0.005, 0.0001),
+    half_extent_m: float = 0.0,
+    grid_spacing_m: float = 0.5,
+    source: str = "<model>",
+) -> str:
+    """Splice a collidable ground plane into ``xml``; no-op when one already exists."""
+    if _has_collidable_plane(xml):
+        return xml
     size = f"{half_extent_m:g} {half_extent_m:g} {grid_spacing_m:g}"
     fric = " ".join(f"{v:g}" for v in friction)
     floor = (
@@ -149,7 +174,161 @@ def compose_ground_plane_mjcf(
     xml, n = re.subn(r"(</worldbody>)", f"    {floor}\n  \\1", xml, count=1)
     if n != 1:
         raise ROSConfigError(
-            f"compose_ground_plane_mjcf: {path} has no <worldbody> to stage a ground plane "
-            "into; it is not a loadable MuJoCo model."
+            f"scene_composers: {source} has no <worldbody> to stage a ground plane into; "
+            "it is not a loadable MuJoCo model."
         )
-    return xml, meshdir
+    return xml
+
+
+def _namespace_default_classes(arm_root: ET.Element, prefix: str) -> None:
+    """Prefix every ``<default>`` class the arm declares, and its references.
+
+    MuJoCo default-class names are **global**, not scoped to the model that
+    declared them. Two menagerie models routinely both declare nested
+    ``visual`` / ``collision`` classes, so merging them raises
+    ``XML Error: repeated default class name``. Renaming only the arm's side
+    keeps the base model's classes — and anything referring to them — untouched.
+    """
+    declared = {d.get("class") for d in arm_root.iter("default") if d.get("class")}
+    for default in arm_root.iter("default"):
+        name = default.get("class")
+        if name:
+            default.set("class", prefix + name)
+    for element in arm_root.iter():
+        for attr in ("class", "childclass"):
+            value = element.get(attr)
+            if value in declared:
+                element.set(attr, prefix + value)
+
+
+def _absolutise_mesh_paths(arm_root: ET.Element, arm_dir: Path) -> None:
+    """Rewrite the arm's ``<mesh file=...>`` to absolute paths.
+
+    The composed model is written next to the BASE model, so the arm's own
+    ``compiler/meshdir`` (relative to its own directory) no longer resolves.
+    Absolute paths sidestep having to reconcile two ``meshdir`` roots.
+    """
+    compiler = arm_root.find("compiler")
+    meshdir = arm_dir / ((compiler.get("meshdir") if compiler is not None else None) or ".")
+    for mesh in arm_root.iter("mesh"):
+        filename = mesh.get("file")
+        if filename:
+            mesh.set("file", str((meshdir / filename).resolve()))
+
+
+def _merge_section(base_root: ET.Element, arm_root: ET.Element, tag: str) -> None:
+    """Append the arm's ``<tag>`` children onto the base's, creating the block if absent."""
+    arm_section = arm_root.find(tag)
+    if arm_section is None:
+        return
+    base_section = base_root.find(tag)
+    if base_section is None:
+        base_section = ET.SubElement(base_root, tag)
+    for child in list(arm_section):
+        base_section.append(child)
+
+
+def compose_mounted_arm_mjcf(
+    *,
+    base_mjcf_ref: str,
+    arm_mjcf_ref: str,
+    mount_body: str,
+    mount_pos: tuple[float, float, float],
+    arm_mjcf_file: str | None = None,
+    mount_quat: tuple[float, float, float, float] | None = None,
+    class_prefix: str = "arm__",
+    ground: bool = True,
+) -> tuple[str, Path]:
+    """Bolt an arm MJCF onto a body of a base-robot MJCF; return ``(xml, meshdir)``.
+
+    The composite a mobile-manipulation task needs — an arm on a quadruped, a
+    gripper on a mobile base — without vendoring a hand-merged model. Both
+    halves stay upstream menagerie assets, so a bump on either side flows
+    through.
+
+    The arm's kinematic tree is appended as the LAST child of ``mount_body``,
+    which puts its joints after the base robot's in ``qpos`` order. That
+    ordering is load-bearing: it leaves the base robot's existing joint
+    indexing untouched, so a locomotion policy written against a 12-DoF Go2
+    keeps working unchanged when an arm is added behind it.
+
+    Three merge hazards are handled, each of which otherwise fails at compile:
+    globally-scoped default-class name collisions, the arm's ``meshdir`` no
+    longer resolving from the base model's directory, and keyframes whose
+    ``qpos`` width must grow to the composite's joint count.
+
+    Args:
+        base_mjcf_ref: ``resolve_asset`` MJCF reference for the carrier robot,
+            e.g. ``"rd:go2_mj_description"``.
+        arm_mjcf_ref: ``resolve_asset`` MJCF reference for the arm package.
+        mount_body: Body in the base model to attach the arm to (the Go2's
+            ``base``). Raises if the model has no such body.
+        mount_pos: ``(x, y, z)`` of the arm root in ``mount_body``'s frame.
+        arm_mjcf_file: Sibling filename to prefer inside the arm package's
+            directory — menagerie ships variants next to the main model
+            (``z1_gripper.xml`` beside ``z1.xml``), and a gripper is the whole
+            point for manipulation. ``None`` uses whatever the ref resolves to.
+        mount_quat: Optional ``(w, x, y, z)`` orientation of the mount.
+        class_prefix: Namespace applied to the arm's default classes.
+        ground: Also stage a collidable floor (see
+            :func:`compose_ground_plane_mjcf`). A composite under gravity needs
+            one for the same reason a bare legged twin does.
+
+    Returns:
+        ``(xml, meshdir)`` per the ``SceneComposition`` contract.
+
+    Raises:
+        ROSConfigError: Either ref fails to resolve, ``mount_body`` is absent,
+            or the arm model exposes no body to mount.
+    """
+    base_path = _resolve_mjcf(base_mjcf_ref)
+    arm_path = _resolve_mjcf(arm_mjcf_ref)
+    if arm_mjcf_file:
+        candidate = arm_path.parent / arm_mjcf_file
+        if not candidate.is_file():
+            raise ROSConfigError(
+                f"compose_mounted_arm_mjcf: arm_mjcf_file {arm_mjcf_file!r} not found beside "
+                f"{arm_path} (looked at {candidate})"
+            )
+        arm_path = candidate
+
+    base_root = ET.parse(base_path).getroot()
+    arm_root = ET.parse(arm_path).getroot()
+
+    _absolutise_mesh_paths(arm_root, arm_path.parent)
+    _namespace_default_classes(arm_root, class_prefix)
+    for tag in ("default", "asset", "actuator", "tendon", "equality", "contact", "sensor"):
+        _merge_section(base_root, arm_root, tag)
+
+    mount = next((b for b in base_root.iter("body") if b.get("name") == mount_body), None)
+    if mount is None:
+        raise ROSConfigError(
+            f"compose_mounted_arm_mjcf: {base_path} has no body named {mount_body!r}; "
+            "cannot mount the arm."
+        )
+    arm_body = arm_root.find("worldbody/body")
+    if arm_body is None:
+        raise ROSConfigError(f"compose_mounted_arm_mjcf: {arm_path} declares no body to mount.")
+    arm_body.set("pos", " ".join(f"{v:g}" for v in mount_pos))
+    if mount_quat is not None:
+        arm_body.set("quat", " ".join(f"{v:g}" for v in mount_quat))
+    mount.append(arm_body)
+
+    # Keyframes are width-checked against the composite's joint count, so the
+    # base's `home` must grow by the arm's. Without this the model refuses to
+    # compile, and dropping the keyframe instead would lose the stand pose the
+    # HAL spawns from.
+    base_key = base_root.find("keyframe/key")
+    arm_key = arm_root.find("keyframe/key")
+    if base_key is not None and arm_key is not None:
+        for attr in ("qpos", "ctrl"):
+            base_value, arm_value = base_key.get(attr), arm_key.get(attr)
+            if base_value and arm_value:
+                base_key.set(attr, f"{base_value} {arm_value}")
+    elif base_key is not None:
+        base_root.remove(base_root.find("keyframe"))  # type: ignore[arg-type]  # reason: guarded by base_key
+
+    xml = ET.tostring(base_root, encoding="unicode")
+    if ground:
+        xml = _stage_ground(xml)
+    return xml, base_path.parent / "assets"
