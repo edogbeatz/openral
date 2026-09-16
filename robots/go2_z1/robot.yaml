@@ -1,0 +1,418 @@
+# RobotDescription — Unitree Go2 + Z1 arm (sim-only mobile manipulator).
+#
+# The composite `robots/go2` cannot be: a quadruped that can also reach. The
+# MJCF is composed at HAL-build time by
+# `openral_sim.scene_composers:compose_mounted_arm_mjcf`, declared under
+# `scene_defaults.composition` rather than in a scene file — the arm is part
+# of THIS ROBOT, not scenery, so every scene that uses go2_z1 gets it.
+#
+# Joint order is load-bearing and matches the composed MJCF's qpos order:
+# the 12 Go2 legs FIRST (indices 0-11, byte-identical to `robots/go2`), then
+# the Z1's 6 arm joints, then the gripper. That ordering is why the 12-DoF
+# rsl-rl locomotion policy still applies unchanged — its action lands on the
+# same joints it always did. The composer guarantees it by mounting the arm
+# as the LAST child of `base`; `tests/unit/test_scene_composers.py` pins it.
+#
+# Leg joint limits are copied verbatim from `robots/go2/robot.yaml` (same
+# hardware). Arm limits come from menagerie `unitree_z1/z1_gripper.xml`.
+#
+# Reach: a 40k-sample kinematic sweep of the arm's full joint range puts the
+# gripper at up to 1.196 m, and 1.196 m with the gripper ahead of the body.
+# Interior door handles sit at 0.85-1.05 m, inside that envelope.
+#
+# Mass: 19.9 kg total, of which the arm is 4.42 kg — under the Go2 manifest's
+# declared `can_lift_kg: 8.0`. Real Unitree pairs the Z1 with the larger B1;
+# this is a sim study, not a claim that a physical Go2 carries a Z1.
+#
+# Sim-only: `hal.real` is null, inherited from the Go2 (no unitree_sdk2
+# adapter exists). Control is MIXED — the Go2's legs are torque `<motor>`
+# actuators driven by a software PD loop, while the Z1's are position
+# servos that hold their own target. `Go2Z1MujocoHAL` owns that split.
+
+name: "go2_z1"
+embodiment_kind: "quadruped"
+base_frame: "base"
+
+assets:
+  urdf:
+    ref: "rd:go2_description"
+  mjcf: "rd:go2_mj_description"
+
+joints:
+  # ── Front left ────────────────────────────────────────────────────
+  - name: "FL_hip_joint"
+    origin_xyz: [0.1934, 0.0465, 0.0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [1, 0, 0]
+    joint_type: "revolute"
+    parent_link: "base"
+    child_link: "FL_hip"
+    position_limits: [-1.0472, 1.0472]
+    velocity_limit: 15.0
+    effort_limit: 23.7
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "FL_thigh_joint"
+    origin_xyz: [0.0, 0.0955, 0.0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "FL_hip"
+    child_link: "FL_thigh"
+    position_limits: [-1.5708, 3.4907]
+    velocity_limit: 15.0
+    effort_limit: 23.7
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "FL_calf_joint"
+    origin_xyz: [0.0, 0.0, -0.213]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "FL_thigh"
+    child_link: "FL_calf"
+    position_limits: [-2.7227, -0.83776]
+    velocity_limit: 7.85
+    effort_limit: 45.43
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  # ── Front right ───────────────────────────────────────────────────
+  - name: "FR_hip_joint"
+    origin_xyz: [0.1934, -0.0465, 0.0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [1, 0, 0]
+    joint_type: "revolute"
+    parent_link: "base"
+    child_link: "FR_hip"
+    position_limits: [-1.0472, 1.0472]
+    velocity_limit: 15.0
+    effort_limit: 23.7
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "FR_thigh_joint"
+    origin_xyz: [0.0, -0.0955, 0.0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "FR_hip"
+    child_link: "FR_thigh"
+    position_limits: [-1.5708, 3.4907]
+    velocity_limit: 15.0
+    effort_limit: 23.7
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "FR_calf_joint"
+    origin_xyz: [0.0, 0.0, -0.213]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "FR_thigh"
+    child_link: "FR_calf"
+    position_limits: [-2.7227, -0.83776]
+    velocity_limit: 7.85
+    effort_limit: 45.43
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  # ── Rear left ─────────────────────────────────────────────────────
+  - name: "RL_hip_joint"
+    origin_xyz: [-0.1934, 0.0465, 0.0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [1, 0, 0]
+    joint_type: "revolute"
+    parent_link: "base"
+    child_link: "RL_hip"
+    position_limits: [-1.0472, 1.0472]
+    velocity_limit: 15.0
+    effort_limit: 23.7
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "RL_thigh_joint"
+    origin_xyz: [0.0, 0.0955, 0.0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "RL_hip"
+    child_link: "RL_thigh"
+    position_limits: [-0.5236, 4.5379]
+    velocity_limit: 15.0
+    effort_limit: 23.7
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "RL_calf_joint"
+    origin_xyz: [0.0, 0.0, -0.213]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "RL_thigh"
+    child_link: "RL_calf"
+    position_limits: [-2.7227, -0.83776]
+    velocity_limit: 7.85
+    effort_limit: 45.43
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  # ── Rear right ────────────────────────────────────────────────────
+  - name: "RR_hip_joint"
+    origin_xyz: [-0.1934, -0.0465, 0.0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [1, 0, 0]
+    joint_type: "revolute"
+    parent_link: "base"
+    child_link: "RR_hip"
+    position_limits: [-1.0472, 1.0472]
+    velocity_limit: 15.0
+    effort_limit: 23.7
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "RR_thigh_joint"
+    origin_xyz: [0.0, -0.0955, 0.0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "RR_hip"
+    child_link: "RR_thigh"
+    position_limits: [-0.5236, 4.5379]
+    velocity_limit: 15.0
+    effort_limit: 23.7
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "RR_calf_joint"
+    origin_xyz: [0.0, 0.0, -0.213]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "RR_thigh"
+    child_link: "RR_calf"
+    position_limits: [-2.7227, -0.83776]
+    velocity_limit: 7.85
+    effort_limit: 45.43
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  # ── Unitree Z1 arm (menagerie unitree_z1/z1_gripper.xml) ──────────
+  # `parent_link`/`child_link` use the upstream Z1 body names; `link00` is
+  # bolted to the Go2 `base` by the composer's mount offset.
+  - name: "joint1"
+    origin_xyz: [0.0, 0.0, 0.0585]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "link00"
+    child_link: "link01"
+    position_limits: [-2.61799, 2.61799]
+    velocity_limit: 3.14
+    effort_limit: 30.0
+    actuator_kind: "bldc"
+  - name: "joint2"
+    origin_xyz: [0.0, 0.0, 0.045]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    position_limits: [0.0, 2.96706]
+    velocity_limit: 3.14
+    effort_limit: 60.0
+    parent_link: "link01"
+    child_link: "link02"
+    actuator_kind: "bldc"
+  - name: "joint3"
+    origin_xyz: [-0.35, 0.0, 0.0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    position_limits: [-2.87979, 0.0]
+    velocity_limit: 3.14
+    effort_limit: 30.0
+    parent_link: "link02"
+    child_link: "link03"
+    actuator_kind: "bldc"
+  - name: "joint4"
+    origin_xyz: [0.218, 0.0, 0.057]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    position_limits: [-1.51844, 1.51844]
+    velocity_limit: 3.14
+    effort_limit: 30.0
+    parent_link: "link03"
+    child_link: "link04"
+    actuator_kind: "bldc"
+  - name: "joint5"
+    origin_xyz: [0.07, 0.0, 0.0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    position_limits: [-1.3439, 1.3439]
+    velocity_limit: 3.14
+    effort_limit: 30.0
+    parent_link: "link04"
+    child_link: "link05"
+    actuator_kind: "bldc"
+  - name: "joint6"
+    origin_xyz: [0.0492, 0.0, 0.0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [1, 0, 0]
+    joint_type: "revolute"
+    position_limits: [-2.79253, 2.79253]
+    velocity_limit: 3.14
+    effort_limit: 30.0
+    parent_link: "link05"
+    child_link: "link06"
+    actuator_kind: "bldc"
+  # Gripper jaw. Negative opens, 0 closes (upstream convention); the
+  # SimGripperDescription below maps Action.gripper 0..1 onto that range.
+  - name: "jointGripper"
+    origin_xyz: [0.0493, 0.0, 0.0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    position_limits: [-1.51844, 0.0]
+    velocity_limit: 3.14
+    effort_limit: 30.0
+    parent_link: "link06"
+    child_link: "gripperMover"
+    actuator_kind: "bldc"
+
+end_effectors:
+  - name: "z1_gripper"
+    kind: "parallel_gripper"
+    parent_link: "link06"
+    n_dof: 1
+    max_grip_force_n: 30.0
+
+# Front RGB camera, inherited from the Go2 (same snout mount). The arm can
+# occlude it — a wrist camera is the follow-up a grasp policy will want.
+sensors:
+  - name: "front"
+    modality: "rgb"
+    frame_id: "front_camera"
+    parent_frame: "base"
+    rate_hz: 15.0
+    intrinsics:
+      width: 640
+      height: 480
+      fx: 343.0
+      fy: 343.0
+      cx: 320.0
+      cy: 240.0
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.front"
+    sim_placement:
+      parent_body: "base"
+      pos: [0.32715, -0.00003, 0.04297]
+      target: [1.32715, -0.00003, 0.0]
+  # Third-person overview. Viz only, no vla_feature_key.
+  - name: "top"
+    modality: "rgb"
+    frame_id: "top_camera"
+    parent_frame: "base"
+    rate_hz: 15.0
+    intrinsics:
+      width: 640
+      height: 480
+      fx: 515.0
+      fy: 515.0
+      cx: 320.0
+      cy: 240.0
+    encoding: "rgb8"
+    sim_placement:
+      parent_body: "base"
+      pos: [0.846, -1.465, 0.916]
+      target: [0.0, 0.0, 0.0]
+      fovy_deg: 50.0
+
+capabilities:
+  locomotion: ["quadruped"]
+  can_lift_kg: 3.0
+  has_dexterous_hands: false
+  has_tactile: false
+  has_force_control: true
+  has_vision: true
+  has_lidar: false
+  has_audio: false
+  bimanual: false
+  supported_control_modes:
+    - "joint_position"
+    - "gripper_position"
+  supported_vla_embodiments:
+    - "go2_z1"
+  embodiment_tags:
+    - "go2_z1"
+    - "go2"
+    - "unitree_go2"
+    - "quadruped"
+    - "mobile_manipulator"
+
+# Inherited from the Go2 envelope. `max_torque_nm` stays at the legs' 45.43
+# (the calf motor) because it is a per-robot ceiling; the arm's own 30/60 N-m
+# limits are enforced per-joint by `effort_limit` above.
+safety:
+  max_ee_speed_m_s: 1.0
+  max_joint_speed_factor: 0.5
+  max_force_n: 100.0
+  max_torque_nm: 45.43
+  deadman_required: true
+
+sdk_kind: "open"
+hal:
+  sim: "openral_hal.go2_z1:Go2Z1MujocoHAL"
+  real: null
+  parameters:
+    defaults:
+      gravity_enabled: false
+
+# The arm is part of the robot, so the composition lives here and not in a
+# scene. `deploy sim` prefers a scene's `composition` when one is set, and
+# falls back to this — so a scene can still override the mount for a study.
+scene_defaults:
+  composition:
+    composer: "openral_sim.scene_composers:compose_mounted_arm_mjcf"
+    params:
+      base_mjcf_ref: "rd:go2_mj_description"
+      arm_mjcf_ref: "rd:z1_mj_description"
+      arm_mjcf_file: "z1_gripper.xml"
+      mount_body: "base"
+      # Forward on the torso, mirroring how Unitree mounts the Z1 on a B1.
+      mount_pos: [0.18, 0.0, 0.06]
+
+sim:
+  floating_base: true
+  keyframe_index: 0
+  # The Z1's actuators are POSITION servos (biastype affine). Left at the
+  # default ctrl of 0 they drive the arm to joint=0 instead of holding the
+  # spawn pose, so the arm sags on the first step. Measured: 0.43 rad of
+  # drift off `home` without this.
+  seed_ctrl_from_qpos: true
+  # Composed-model actuator order: 12 legs, then motor1..motor6, then
+  # motorGripper. Explicit because the Z1's actuator names ("motor1") do not
+  # match its joint names ("joint1"), so the name-derived default mapping
+  # that works for the Go2's legs cannot resolve them.
+  actuator_index:
+    FL_hip_joint: 0
+    FL_thigh_joint: 1
+    FL_calf_joint: 2
+    FR_hip_joint: 3
+    FR_thigh_joint: 4
+    FR_calf_joint: 5
+    RL_hip_joint: 6
+    RL_thigh_joint: 7
+    RL_calf_joint: 8
+    RR_hip_joint: 9
+    RR_thigh_joint: 10
+    RR_calf_joint: 11
+    joint1: 12
+    joint2: 13
+    joint3: 14
+    joint4: 15
+    joint5: 16
+    joint6: 17
+    jointGripper: 18
+  grippers:
+    - joint: "jointGripper"
+      ctrl_range: [-1.51844, 0.0]
+      qpos_addrs: [25]
+      qpos_scale: 1.51844
+      read_mode: "affine_low_high"
+      write_mode: "normalised"
+      actuator_index: 18
+
+collision_geometry: []
+allowed_collision_pairs: []
+schema_version: '0.1'
