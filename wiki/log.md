@@ -6,6 +6,60 @@ updated: 2026-09-16
 
 Each entry starts with `## [YYYY-MM-DD] <op> | <title>`. Ops: `ingest`, `query`, `lint`, `manual`, `bootstrap`.
 
+## [2026-09-16] ingest | Go2 Foxglove session state + rebuild of the four lost pages
+
+- summary: wiki/entities/go2.md, wiki/analyses/proving-sim-motion-not-a-frozen-stand.md
+- touched: wiki/index.md, wiki/entities/openral-foxglove-bringup.md, wiki/concepts/deploy-sim-visualization.md, wiki/analyses/foxglove-web-meshes-need-package-uri.md
+- new: wiki/entities/openral.md, wiki/entities/go2.md, wiki/concepts/wiki-maintenance-workflow.md, wiki/sources/engineering-playbook.md, wiki/sources/repo-map.md, wiki/analyses/proving-sim-motion-not-a-frozen-stand.md
+- linear: none
+- notes: swept the uncommitted working tree (Go2 HAL, camera rig,
+  foxglove bringup, dashboard.js) plus `.agents/skills/go2-foxglove-view/`
+  into the wiki. New durable findings the earlier pages predated: the
+  ament mesh overlay is **confirmed** on cricket and the remaining blocker
+  is Studio caching the earlier fetch failure; COLLADA `<up_axis>` (RViz
+  ignores it, Foxglove honours it, so the layout forces `z_up`); Image
+  panels need the paired CameraInfo on the *manifest* `frame_id`; the
+  dashboard freshness pill ages against the host clock, not the browser's;
+  Go2 torque motors need `idle_step` to PD-hold or the calves fold.
+  Filed the actuation-verification traps as their own analysis —
+  `/joint_states` span is the only ground truth, `action_applied` stayed
+  silent through a real trot, and `docker exec` without `-i` drops a
+  heredoc and still exits 0.
+  Rebuilt the four pages lost on 2026-09-16 from in-repo sources only
+  (`CLAUDE.md`, `docs/architecture/repo-map.md`, `README.md`,
+  `.agents/skills/openral-wiki/SKILL.md`) — re-derivations, flagged as
+  such in the index, no attempt to reproduce the lost wording.
+  Every `[[wikilink]]` now resolves; no dangling targets remain.
+  Operational host state (cricket container, pids, script invocations)
+  deliberately stays in the `go2-foxglove-view` skill, not in wiki prose.
+
+## [2026-09-16] query | Front camera cannot see the robot; add Go2 top cam
+
+- summary: wiki/concepts/deploy-sim-visualization.md
+- touched: wiki/concepts/deploy-sim-visualization.md, wiki/log.md
+- linear: none
+- notes: Foxglove 3D showed Go2; `/openral/cameras/front/image` did not.
+  Front cam looks +X from the face. Added viz-only `top` (menagerie
+  track pose). Layout leads with `top`; sim layout uses all RGB sensors.
+
+## [2026-09-16] query | Front camera gray slab is empty staging, not zoom
+
+- summary: wiki/concepts/deploy-sim-visualization.md
+- touched: wiki/concepts/deploy-sim-visualization.md, wiki/log.md
+- linear: none
+- notes: Go2 `/openral/cameras/front/image` in Foxglove looked like a
+  zoomed-in gray card. Local MuJoCo render was ~70° FoV, official URDF
+  pose, black sky over a flat `camrig_floor`. Foxglove's dark panel hid
+  the sky. Staging floor is now infinite checker + skybox.
+
+## [2026-09-16] query | Foxglove web meshes need package:// + ament overlay
+
+- summary: wiki/analyses/foxglove-web-meshes-need-package-uri.md
+- touched: wiki/index.md, wiki/entities/openral-foxglove-bringup.md, wiki/concepts/deploy-sim-visualization.md, wiki/analyses/foxglove-web-meshes-need-package-uri.md
+- new: wiki/entities/openral-foxglove-bringup.md, wiki/concepts/deploy-sim-visualization.md, wiki/analyses/foxglove-web-meshes-need-package-uri.md
+- linear: none
+- notes: filed from a cricket Go2 `deploy sim --foxglove` session (Mac web viewer). Studio requests only `package://` from the bridge; the old `rewrite_package_mesh_uris` (`file://`) cannot feed app.foxglove.dev or a laptop desktop Studio. No older wiki page claimed the file:// rewrite (domain had no home after the 2026-09-16 partial restore). Go2 entity page not created — none existed. `wiki/concepts/wiki-maintenance-workflow.md` still lost; not reconstructed.
+
 ## [2026-09-16] manual | Wiki references Linear back (provenance only)
 
 - touched: wiki/concepts/task-wiki-contract.md, .agents/skills/openral-wiki/SKILL.md

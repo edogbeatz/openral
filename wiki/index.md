@@ -15,26 +15,30 @@ Start here: [[entities/openral]].
 
 **Tasks must cite this wiki.** See [[concepts/task-wiki-contract]].
 
-> ⚠️ Partial restore (2026-09-16). Four pages were lost before they were
-> ever committed and could not be recovered; they are marked **lost** below
-> and their `[[wikilinks]]` currently dangle. Rebuild from the source
-> material, do not invent their contents. See `wiki/log.md`.
+> The four pages lost in the 2026-09-16 partial restore were rebuilt the
+> same day from their in-repo sources (`CLAUDE.md`,
+> `docs/architecture/repo-map.md`, `README.md`, the wiki skill). They are
+> re-derivations, not the original text. See `wiki/log.md`.
 
 ## Sources
 
-- [[sources/engineering-playbook]] — `CLAUDE.md` (agent + contributor contract). **lost — rebuild**
-- [[sources/repo-map]] — directory layout + `repo-state-map.html`. **lost — rebuild**
+- [[sources/engineering-playbook]] — `CLAUDE.md` (agent + contributor contract); what it governs and where it points.
+- [[sources/repo-map]] — `python/*` vs `packages/*` vs `cpp/`, the state-map PR gate, out-of-tree repos.
 
 ## Entities
 
-- [[entities/openral]] — the project overall (harness, layers, where truth lives). **lost — rebuild**
+- [[entities/openral]] — the project overall (harness, eight layers, where truth lives).
+- [[entities/go2]] — Unitree Go2 sim-only spike: 12-DoF quadruped, torque-motor PD hold, `front` + viz-only `top` cameras.
+- [[entities/openral-foxglove-bringup]] — read-only Foxglove live-scene package; `package://` meshes via ament overlay; layout generator.
 
 ## Concepts
 
 - [[concepts/second-brain]] — what the wiki is and is not.
 - [[concepts/task-wiki-contract]] — Linear / PR / agent tasks cite wiki pages; how the wiki references Linear back.
-- [[concepts/wiki-maintenance-workflow]] — ingest, query, lint, log format. **lost — rebuild**
+- [[concepts/wiki-maintenance-workflow]] — ingest, query, lint, page rules, log format.
+- [[concepts/deploy-sim-visualization]] — hybrid `--dashboard` + `--foxglove`; laptop viewer vs remote graph; display frame, floor, up-axis; host-clock freshness.
 
 ## Analyses
 
-_(none yet)_
+- [[analyses/foxglove-web-meshes-need-package-uri]] — Studio (web and desktop) only requests `package://` from the bridge; the overlay works, and Studio still caches the earlier failure.
+- [[analyses/proving-sim-motion-not-a-frozen-stand]] — `/joint_states` span is ground truth; `action_applied`, `ros2 node list`, and a silent `docker exec` all lie.

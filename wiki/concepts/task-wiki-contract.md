@@ -32,7 +32,7 @@ Every new task includes:
 ```
 
 If the domain has no page, create a thin one in the same change (or as
-the first step of the task), add it to [[wiki/index]], then cite it.
+the first step of the task), add it to [[index]], then cite it.
 No cite, no task.
 
 ## Lifecycle
