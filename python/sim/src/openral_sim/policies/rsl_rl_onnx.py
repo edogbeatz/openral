@@ -28,14 +28,23 @@ Empty extras / empty goal_params keep the YAML default.
 
 Action
 ------
-``q_des = default_joint_pos[map] + scale * raw_action``, then scattered back
-to HAL / menagerie order via ``joint_ids_map``. 12-D ``JOINT_POSITION`` only
-— no cartesian representation.
+``q_des = default_joint_pos + scale * raw_action``, 12-D ``JOINT_POSITION``
+only — no cartesian representation.
+
+Joint order
+-----------
+``deploy.yaml``'s ``joint_ids_map`` is the **real-robot** permutation between
+the policy's own joint order and the Unitree SDK's (``FR, FL, RR, RL`` against
+menagerie's ``FL, FR, RL, RR``). A MuJoCo twin already speaks the policy's
+order, so the map is not applied unless the manifest sets
+``policy_extras.joint_order: unitree_sdk``. Applying it to a sim twin mirrors
+every leg command and the robot falls within ~2 s — see ``_apply_joint_order``
+for the measurements.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
@@ -66,6 +75,13 @@ _DEFAULT_DEPLOY_REL: Final[str] = "params/deploy.yaml"
 _DEFAULT_VELOCITY_COMMANDS: tuple[float, float, float] = (0.5, 0.0, 0.0)
 _GRAVITY_WORLD: NDArray[np.float32] = np.array([0.0, 0.0, -1.0], dtype=np.float32)
 _OBS_FALLBACK_WARNED: set[str] = set()
+
+# Whose joint order the caller feeds this policy. `deploy.yaml`'s
+# `joint_ids_map` converts between the policy's own order and the Unitree SDK's
+# real-robot order; a MuJoCo twin in menagerie order needs no conversion.
+# See `_apply_joint_order` for the measured consequence of getting this wrong.
+_JOINT_ORDERS: Final[frozenset[str]] = frozenset({"policy", "unitree_sdk"})
+_JOINT_ORDER_DEFAULT: Final[str] = "policy"
 
 # Isaac Lab term widths used only when ``deploy.yaml`` gives a scalar scale.
 # Term *names* still come from the YAML observation block.
@@ -505,6 +521,7 @@ def _build_rsl_rl_onnx(env_cfg: Any) -> _RslRlOnnxAdapter:
         extra = {**dict(manifest.policy_extras), **extra}
     onnx_path, deploy_path = resolve_rsl_rl_onnx_assets(spec, extra=extra, manifest=manifest)
     config = load_rsl_rl_deploy_yaml(deploy_path)
+    config = _apply_joint_order(config, extra)
     session, input_name, device = _open_onnx_session(onnx_path, spec)
     velocity = resolve_velocity_commands(extra)
     log.info(
@@ -515,6 +532,8 @@ def _build_rsl_rl_onnx(env_cfg: Any) -> _RslRlOnnxAdapter:
         action_dim=config.action_dim,
         velocity_commands=velocity.tolist(),
         velocity_command_source="policy_extras",
+        joint_order=str(extra.get("joint_order", _JOINT_ORDER_DEFAULT)),
+        joint_ids_map=config.joint_ids_map.tolist(),
         note="reasoner prompt is not mapped to Isaac velocity_commands",
     )
     return _RslRlOnnxAdapter(
@@ -526,6 +545,46 @@ def _build_rsl_rl_onnx(env_cfg: Any) -> _RslRlOnnxAdapter:
         _velocity_commands=velocity,
         _default_velocity_commands=velocity.copy(),
     )
+
+
+def _apply_joint_order(
+    config: RslRlOnnxDeployConfig, extra: dict[str, object]
+) -> RslRlOnnxDeployConfig:
+    """Resolve whose joint order the caller feeds, and drop the map when it is the policy's.
+
+    ``deploy.yaml``'s ``joint_ids_map`` is the **real-robot** permutation: it
+    reorders between the policy's own joint order and the Unitree SDK's
+    (``FR, FL, RR, RL`` against menagerie's ``FL, FR, RL, RR``). OpenRAL's HAL
+    speaks menagerie order, which for this checkpoint IS the policy's training
+    order — so applying the map hands every command to the mirrored leg.
+
+    The permutation is self-inverse, so reading it as gather-then-scatter or
+    the reverse produces the same wrong result; the only correct action is not
+    to apply it. Measured offline at a true 50 Hz on the composed `go2_walk`
+    floor, 20 s at ``[0.5, 0, 0]``:
+
+    ==================  ================================================
+    ``joint_order``     result
+    ==================  ================================================
+    ``policy`` (ident)  7.07 m forward, 0.39 m lateral, never below stand
+    ``unitree_sdk``     0.30 m, collapsed to z=0.155 (self-collision stop)
+    ==================  ================================================
+
+    Default is ``"policy"`` because every in-tree consumer drives a MuJoCo
+    twin in menagerie order. A caller wiring this policy to a real Go2 over
+    ``unitree_sdk2`` sets ``policy_extras.joint_order: unitree_sdk`` to get
+    the YAML permutation back. The map is still parsed and validated either
+    way, so a malformed one is still rejected at load.
+    """
+    order = str(extra.get("joint_order", _JOINT_ORDER_DEFAULT))
+    if order not in _JOINT_ORDERS:
+        raise ROSConfigError(
+            f"rsl_rl_onnx: joint_order {order!r} is not one of {sorted(_JOINT_ORDERS)}"
+        )
+    if order == "unitree_sdk":
+        return config
+    identity = np.arange(config.default_joint_pos.shape[0], dtype=np.intp)
+    return replace(config, joint_ids_map=identity)
 
 
 def resolve_rsl_rl_onnx_assets(

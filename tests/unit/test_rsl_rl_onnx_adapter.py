@@ -24,6 +24,7 @@ from openral_sim.factory import make_policy
 from openral_sim.policies.rsl_rl_onnx import (
     _OBS_FALLBACK_WARNED,
     RSL_RL_ONNX_FAMILY,
+    _apply_joint_order,
     _base_ang_vel_from_obs,
     _projected_gravity_from_obs,
     apply_velocity_command_override,
@@ -180,6 +181,49 @@ def test_observation_and_action_use_joint_ids_map() -> None:
     assert decoded.shape == (12,)
     np.testing.assert_allclose(decoded[3], 0.1 + 0.5 * 2.0)
     np.testing.assert_allclose(decoded[0], -0.1)
+
+
+def test_joint_order_defaults_to_the_policys_own_not_the_sdk_permutation() -> None:
+    """A MuJoCo twin speaks the policy's joint order, so the SDK map must not apply.
+
+    `deploy.yaml`'s `joint_ids_map` converts between the policy's order and the
+    Unitree SDK's real-robot order (`FR, FL, RR, RL` vs menagerie's
+    `FL, FR, RL, RR`). Applying it to a sim twin sends every leg's command to
+    its mirror. The permutation is self-inverse, so gather-vs-scatter direction
+    cannot rescue it — measured offline at a true 50 Hz, 20 s at [0.5, 0, 0]:
+    7.07 m upright with identity, 0.30 m and collapsed with the map.
+    """
+    yaml_cfg = load_rsl_rl_deploy_yaml(_DEPLOY)
+    # The fixture really is the mirroring permutation, and really is an involution.
+    assert yaml_cfg.joint_ids_map.tolist() == [3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8]
+    round_trip = yaml_cfg.joint_ids_map[yaml_cfg.joint_ids_map]
+    np.testing.assert_array_equal(round_trip, np.arange(12))
+
+    default = _apply_joint_order(yaml_cfg, {})
+    np.testing.assert_array_equal(default.joint_ids_map, np.arange(12))
+
+    sdk = _apply_joint_order(yaml_cfg, {"joint_order": "unitree_sdk"})
+    np.testing.assert_array_equal(sdk.joint_ids_map, yaml_cfg.joint_ids_map)
+
+    with pytest.raises(ROSConfigError, match="joint_order"):
+        _apply_joint_order(yaml_cfg, {"joint_order": "isaac"})
+
+
+def test_joint_order_decides_which_leg_an_action_reaches() -> None:
+    """The consequence the gait cares about: slot 0 must drive FL, not FR."""
+    yaml_cfg = load_rsl_rl_deploy_yaml(_DEPLOY)
+    raw = np.zeros(12, dtype=np.float32)
+    raw[0] = 2.0
+
+    native = decode_rsl_rl_joint_position(raw, _apply_joint_order(yaml_cfg, {}))
+    np.testing.assert_allclose(native[0], -0.1 + 0.5 * 2.0)  # FL hip moved
+    np.testing.assert_allclose(native[3], 0.1)  # FR hip untouched
+
+    sdk = decode_rsl_rl_joint_position(
+        raw, _apply_joint_order(yaml_cfg, {"joint_order": "unitree_sdk"})
+    )
+    np.testing.assert_allclose(sdk[3], 0.1 + 0.5 * 2.0)  # mirrored onto FR
+    np.testing.assert_allclose(sdk[0], -0.1)
 
 
 def _zero_action_policy(tmp_path: Path) -> Any:
