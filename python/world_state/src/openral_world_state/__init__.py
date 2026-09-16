@@ -29,6 +29,7 @@ from openral_world_state.aggregator import (
     DEFAULT_RATE_HZ,
     DEFAULT_STALENESS_S,
     WorldStateAggregator,
+    pose_twist_from_odometry_fields,
 )
 from openral_world_state.embedder import (
     DEFAULT_CLIP_MODEL,
@@ -99,6 +100,7 @@ __all__ = [
     "emit_scene_objects_span",
     "homogeneous_from_quat_xyz",
     "look_at_quat_wxyz",
+    "pose_twist_from_odometry_fields",
     "refine_approach_pose",
     "rotation_to_quat_wxyz",
     "scene_objects_payload",

@@ -5986,7 +5986,9 @@ and emits a 6-D ``BODY_TWIST`` velocity command for a mobile base.
 locomotion family (not a vision-language policy, and not SmolVLA). The
 adapter ``openral_sim.policies.rsl_rl_onnx`` loads ``policy.onnx`` plus
 the checkpoint's ``params/deploy.yaml``, builds the rsl-rl observation
-from HAL / world-state proprio + a ``policy_extras`` velocity command,
+from HAL / world-state proprio + a ``policy_extras`` velocity command
+(overridable per ``execute_rskill`` via ``goal_params_json`` or
+``VLASpec.extra`` without editing the rSkill YAML),
 and emits 12-D ``JOINT_POSITION`` targets. The reasoner prompt is **not**
 mapped to Isaac ``velocity_commands`` — see the rSkill README.
 """

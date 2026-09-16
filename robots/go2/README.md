@@ -77,13 +77,19 @@ Canonical order (matches the menagerie MJCF actuators after
 | 11 | `RR_calf_joint` | −2.7227 – −0.83776 | 45.43 |
 
 Calf range **excludes 0**. `connect()` loads menagerie keyframe `home`
-(thigh 0.9, calf −1.8 on every leg). Velocity limits in the manifest
+for free-joint height, then snaps actuated joints to Hub
+`params/deploy.yaml` `default_joint_pos` (hip ±0.1, thigh 0.9, calf
+−1.8). Menagerie keyframe hips are 0.0 — that delta is closed on
+purpose so rsl-rl `joint_pos_rel` is zero at stand. Velocity limits in the manifest
 are halved published-spec values (hip/thigh 30.1 rad/s, calf 15.70
 rad/s) for the safety envelope.
 
 The menagerie MJCF uses torque `<motor>` actuators. `Go2MujocoHAL`
 runs a software PD loop every `mj_step` (same as `H1MujocoHAL`) so
-the public contract stays position targets in radians.
+the public contract stays position targets in radians. Hub
+`deploy.yaml` PD (`stiffness` 20/20/40, `damping` 1/1/2) is **not**
+applied — HAL `kp` saturates `ctrlrange` at 1 rad error (`kv = 0.05 * kp`)
+so estop / home holds stay conservative. Documented intentional delta.
 
 ## Detect & deploy
 
@@ -115,9 +121,13 @@ Real hardware (`deploy run`) is refused until `hal.real` is filled in.
 
 ## Remaining gaps (pipe_gate-quality smoke)
 
-- No walking / `body_twist` (no `mobile_base` tag until that exists).
+- No walking / BODY_TWIST control (HAL now publishes `base_pose_6dof` +
+  `base_twist` for rsl-rl obs via `/odom`; no `mobile_base` tag until a
+  cmd_vel contract exists).
 - No real HAL (`hal.real` is null).
 - No collision geometry / ACM (`openral collision lower` not run).
+  When that lands, ACM rest should use Hub `default_joint_pos` /
+  `GO2_HOME_JOINT_TARGETS` (hip ±0.1), not menagerie hip 0.0.
 - Front-camera intrinsics are nominal, not calibrated.
 - Hardware radar / Go2 Edu cameras / compute are undeclared.
 - `openral detect` does not distinguish Go2 from G1/H1 on DDS.

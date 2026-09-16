@@ -15,7 +15,8 @@
 # 12 actuated joints: FL / FR / RL / RR × (hip, thigh, calf). Floating-base
 # qpos[0..6] is implicit world state, NOT enumerated. Rear thighs have a
 # wider range than the front pair (URDF fact). Calf range excludes 0 —
-# connect() loads the menagerie `home` keyframe (thigh 0.9, calf −1.8).
+# connect() loads menagerie keyframe 0 (free-joint height) then snaps
+# actuated joints to Hub deploy.yaml default_joint_pos (hip ±0.1).
 #
 # This is a sim-only spike. Go2 Edu (extra cameras / compute) is a follow-up.
 # Hardware has a face radar; it is NOT declared here (no calibrated lidar
@@ -256,7 +257,8 @@ hal:
 # MuJoCo wiring consumed by ``openral_hal.MujocoArmHAL.from_description``.
 # Source: ``unitree_go2/go2.xml`` in mujoco_menagerie. Floating-base
 # quadruped — qpos starts at 7 (free joint), qvel at 6. keyframe 0 is
-# the menagerie ``home`` stand (calves cannot rest at 0).
+# the menagerie ``home`` stand (free-joint height). Actuated hips are then
+# snapped to Hub ±0.1 (GO2_HOME_JOINT_TARGETS). Calves cannot rest at 0.
 sim:
   floating_base: true
   keyframe_index: 0

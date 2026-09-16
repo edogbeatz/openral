@@ -129,6 +129,9 @@ if _ROS2_AVAILABLE:
             self.declare_parameter("publish_rate_hz_fast", 30.0)
             self.declare_parameter("publish_rate_hz_slow", 5.0)
             self.declare_parameter("joint_states_topic", "/joint_states")
+            # Go2 / floating-base HALs publish IMU + pose as nav_msgs/Odometry
+            # on /odom (no TF parent). Empty string disables the subscription.
+            self.declare_parameter("odom_topic", "/odom")
             # 0.5 s, not 0.1 s: with 10 Hz cameras a 0.1 s window equals the
             # frame period, so the per-sensor diagnostics flapped OK↔STALE on
             # every snapshot. See WorldStateAggregator.DEFAULT_STALENESS_S.
@@ -173,6 +176,7 @@ if _ROS2_AVAILABLE:
             self._pub_fast = None
             self._pub_slow = None
             self._joint_sub = None
+            self._odom_sub = None
             self._policy_state_sub = None
             self._attachment_sub = None
             self._camera_subs: dict[str, object] = {}
@@ -283,6 +287,24 @@ if _ROS2_AVAILABLE:
                 self._on_joint_state,
                 sensor_qos,
             )
+            odom_topic: str = (
+                self.get_parameter("odom_topic").get_parameter_value().string_value or ""
+            )
+            if odom_topic:
+                from nav_msgs.msg import Odometry
+
+                odom_qos = QoSProfile(
+                    reliability=QoSReliabilityPolicy.RELIABLE,
+                    durability=QoSDurabilityPolicy.VOLATILE,
+                    depth=10,
+                )
+                self._odom_sub = self.create_subscription(
+                    Odometry,
+                    odom_topic,
+                    self._on_odom,
+                    odom_qos,
+                )
+                self.get_logger().info(f"WorldState subscribing to odom '{odom_topic}'.")
             from std_msgs.msg import Float32MultiArray
 
             self._policy_state_sub = self.create_subscription(
@@ -501,6 +523,9 @@ if _ROS2_AVAILABLE:
             if self._joint_sub is not None:
                 self.destroy_subscription(self._joint_sub)
                 self._joint_sub = None
+            if self._odom_sub is not None:
+                self.destroy_subscription(self._odom_sub)
+                self._odom_sub = None
             if self._policy_state_sub is not None:
                 self.destroy_subscription(self._policy_state_sub)
                 self._policy_state_sub = None
@@ -633,6 +658,36 @@ if _ROS2_AVAILABLE:
                 tracer_name="openral_world_state_ros",
             )
             self._aggregator.update_image_frame(sensor_name, frame)
+
+        def _on_odom(self, msg: object) -> None:
+            """Copy HAL ``/odom`` (pose + twist) into the shared aggregator."""
+            if self._aggregator is None:
+                return
+            from openral_world_state import pose_twist_from_odometry_fields
+
+            pose_msg = getattr(msg, "pose", None)
+            twist_msg = getattr(msg, "twist", None)
+            header = getattr(msg, "header", None)
+            if pose_msg is None or twist_msg is None:
+                return
+            p = pose_msg.pose.position
+            q = pose_msg.pose.orientation
+            tw = twist_msg.twist
+            frame_id = str(getattr(header, "frame_id", "") or "odom")
+            pose, twist = pose_twist_from_odometry_fields(
+                xyz=(float(p.x), float(p.y), float(p.z)),
+                quat_xyzw=(float(q.x), float(q.y), float(q.z), float(q.w)),
+                twist=(
+                    float(tw.linear.x),
+                    float(tw.linear.y),
+                    float(tw.linear.z),
+                    float(tw.angular.x),
+                    float(tw.angular.y),
+                    float(tw.angular.z),
+                ),
+                frame_id=frame_id,
+            )
+            self._aggregator.update_base_pose(pose, twist=twist)
 
         def _on_joint_state(self, msg: object) -> None:
             """Convert ROS JointState → Pydantic JointState and update aggregator."""

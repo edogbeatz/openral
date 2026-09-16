@@ -63,7 +63,11 @@ is applied inside the adapter (policy slot → robot index). Do not invent
 a second remap.
 
 `default_joint_pos` in the Hub YAML is menagerie-like with hip offsets
-`±0.1` (thigh `0.9`, calf `−1.8`). The HAL home keyframe uses hip `0.0`.
+`±0.1` (thigh `0.9`, calf `−1.8`). `Go2MujocoHAL` spawn / `GO2_HOME_JOINT_TARGETS`
+/ this manifest's `starting_pose` use that same vector. Menagerie keyframe 0
+still supplies free-joint height; actuated hips are snapped to Hub ±0.1 after
+`connect()`. The in-tree ACM is empty — when collision lower lands, rest pose
+should be this Hub stand, not menagerie hip `0.0`.
 
 ## Sensors / observation contract
 
@@ -74,18 +78,18 @@ YAML order, concatenated:
 |---|---|---|
 | `base_ang_vel` | 3 | `WorldState.base_twist[3:6]` (or `obs["base_ang_vel"]`) |
 | `projected_gravity` | 3 | `WorldState.base_pose.quat_xyzw` → \(R^\top [0,0,-1]\) |
-| `velocity_commands` | 3 | **`policy_extras.velocity_commands`** — not the reasoner prompt |
+| `velocity_commands` | 3 | YAML default **or** per-call override (see below) — not the reasoner prompt |
 | `joint_pos_rel` | 12 | `joint_state.position[map] − default_joint_pos[map]` |
 | `joint_vel_rel` | 12 | `joint_state.velocity[map]` (zeros if the HAL omits velocity) |
 | `last_action` | 12 | previous raw ONNX action |
 
 Total **45-D**. History length is 1 on this checkpoint.
 
-### Velocity command gap (honest)
+### Velocity command (per-call override)
 
 Isaac `velocity_commands` is a joystick `[vx, vy, yaw_rate]`. The reasoner
-sends a natural-language prompt. This hackathon adapter does **not** parse
-the prompt. `execute_rskill` / `make_policy` read:
+prompt is natural language and is **not** parsed into that vector. YAML is
+the default only:
 
 ```yaml
 policy_extras:
@@ -94,20 +98,40 @@ policy_extras:
   deploy_yaml: params/deploy.yaml
 ```
 
-Override `velocity_commands` in the manifest or `VLASpec.extra` for a
-different cmd. A real nav stack (BODY_TWIST → joystick) is out of scope.
+Override **without editing this YAML** (highest wins):
 
-### HAL gaps vs `go2_bench`
+1. `observation["velocity_commands"]` on this `step()` (verify / runner attach).
+2. `ExecuteRskill.goal_params_json` — the reasoner tool palette surfaces
+   `goal_params_schema.velocity_commands`:
 
-`scenes/deploy/go2_bench.yaml` boots the MuJoCo digital twin with
-**gravity off** and no locomotion controller — it is a 12-DoF HAL pipe
-proof, not a walking scene. `Go2MujocoHAL` does not publish IMU /
-`base_pose_6dof` the way the G1 walking controller does. When
-`WorldState.base_pose` / `base_twist` are missing the adapter uses
-identity projected gravity `[0, 0, −1]` and zero angular velocity. PD
-gains in `deploy.yaml` (`stiffness` / `damping`) are **not** applied here;
-the HAL keeps its own software PD. Success criterion is `make_policy`
-load + 12-D emit, not gait quality.
+   ```json
+   {"velocity_commands": [1.0, 0.0, 0.3]}
+   ```
+
+   Empty `goal_params_json` restores the YAML default on a resident skill.
+3. `VLASpec.extra["velocity_commands"]` at `make_policy` / `openral sim run`.
+
+A real nav stack (BODY_TWIST → joystick) is still out of scope.
+
+### HAL IMU / pose and PD
+
+`Go2MujocoHAL` publishes `base_pose_6dof()` (free-joint xyz + quat_xyzw) and
+`base_twist` (`qvel[0:6]`; angular part is base-frame, Isaac `base_ang_vel`).
+The HAL lifecycle republishes that as `/odom` (no extra TF parent). WorldState
+subscribes and fills `WorldState.base_pose` / `base_twist`. The runner copies
+those onto the observation. When pose/twist are still missing the adapter
+logs a **one-shot** `rsl_rl_onnx.obs_fallback` warning and uses identity
+projected gravity `[0, 0, −1]` and zero angular velocity.
+
+`scenes/deploy/go2_bench.yaml` still boots with **gravity off** — it is a
+12-DoF HAL pipe proof, not a walking scene. Success criterion is load +
+correct 45-D obs sources + 12-D emit, **not** gait quality.
+
+Hub `deploy.yaml` PD (`stiffness` `[20, 20, 40]`, `damping` `[1, 1, 2]` per
+hip/thigh/calf) is **not** applied. HAL software PD stays
+`kp = ctrlrange` (23.7 / 23.7 / 45.43) and `kv = 0.05 * kp` so 1 rad of
+error saturates torque and estop / home-acm holds do not change. That
+delta is intentional and documented.
 
 ## Manifest summary
 
@@ -128,6 +152,11 @@ policy_extras:
   velocity_commands: [0.5, 0.0, 0.0]
   onnx_filename: policy.onnx
   deploy_yaml: params/deploy.yaml
+goal_params_schema:
+  type: object
+  properties:
+    velocity_commands: {type: array, minItems: 3, maxItems: 3}
+starting_pose: [-0.1, 0.9, -1.8, 0.1, 0.9, -1.8, -0.1, 0.9, -1.8, 0.1, 0.9, -1.8]
 ```
 
 Local `make_policy` tests point `VLASpec.weights_uri` at a directory that
