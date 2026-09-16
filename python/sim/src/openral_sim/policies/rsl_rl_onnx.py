@@ -779,6 +779,13 @@ def _float_vec(raw: object, *, name: str) -> NDArray[np.float32]:
         raise ROSConfigError(f"rsl_rl_onnx: {name} is missing")
     if isinstance(raw, (int, float)):
         return np.asarray([float(raw)], dtype=np.float32)
+    # An already-coerced vector must survive a second pass. `set_velocity_commands`
+    # re-validates whatever it is handed, and `apply_velocity_command_override`
+    # hands it the float32 array `velocity_override_from_goal_params` just
+    # produced — so rejecting ndarray here made every goal_params_json joystick
+    # override abort the goal.
+    if isinstance(raw, np.ndarray):
+        raw = raw.reshape(-1).tolist()
     if not isinstance(raw, (list, tuple)):
         raise ROSConfigError(f"rsl_rl_onnx: {name} must be a list of floats, got {type(raw)}")
     try:

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from typing import get_args
+from typing import Any, get_args
 
 import numpy as np
 import pytest
@@ -182,11 +182,8 @@ def test_observation_and_action_use_joint_ids_map() -> None:
     np.testing.assert_allclose(decoded[0], -0.1)
 
 
-def test_make_policy_emits_12d_joint_positions(tmp_path: Path) -> None:
-    """``make_policy`` loads a real ONNX session and emits 12-D targets."""
-    pytest.importorskip("onnx")
-    pytest.importorskip("onnxruntime")
-
+def _zero_action_policy(tmp_path: Path) -> Any:
+    """Build the real adapter over a zero-action ONNX graph + the Hub deploy.yaml."""
     cfg = load_rsl_rl_deploy_yaml(_DEPLOY)
     skill_dir = tmp_path / "skill"
     skill_dir.mkdir()
@@ -210,7 +207,43 @@ def test_make_policy_emits_12d_joint_positions(tmp_path: Path) -> None:
         ),
         scene=SimpleNamespace(cameras=()),
     )
-    policy = make_policy(env)  # type: ignore[arg-type]
+    return make_policy(env)  # type: ignore[arg-type]
+
+
+def test_goal_params_override_reaches_the_real_adapter(tmp_path: Path) -> None:
+    """A goal_params joystick must survive the adapter's own re-validation.
+
+    ``apply_velocity_command_override`` hands ``set_velocity_commands`` the
+    float32 array it just built, and that setter re-validates what it is given.
+    While the validator rejected ``ndarray``, every ``goal_params_json``
+    override aborted its goal with ``ROSConfigError`` before a single chunk
+    was published. The stub in the sibling test coerces with ``np.asarray``
+    and so is blind to this — the regression only shows against a real adapter.
+    """
+    pytest.importorskip("onnx")
+    pytest.importorskip("onnxruntime")
+
+    policy = _zero_action_policy(tmp_path)
+    try:
+        applied = apply_velocity_command_override(
+            policy, '{"velocity_commands": [0.7, -0.2, 0.3]}'
+        )
+        assert applied is not None
+        np.testing.assert_allclose(policy._velocity_commands, [0.7, -0.2, 0.3])
+        # Empty payload restores the manifest default rather than sticking.
+        assert apply_velocity_command_override(policy, "") is None
+        np.testing.assert_allclose(policy._velocity_commands, [0.4, 0.0, 0.0])
+    finally:
+        policy.close()
+
+
+def test_make_policy_emits_12d_joint_positions(tmp_path: Path) -> None:
+    """``make_policy`` loads a real ONNX session and emits 12-D targets."""
+    pytest.importorskip("onnx")
+    pytest.importorskip("onnxruntime")
+
+    cfg = load_rsl_rl_deploy_yaml(_DEPLOY)
+    policy = _zero_action_policy(tmp_path)
     try:
         policy.reset()
         action = policy.step(
