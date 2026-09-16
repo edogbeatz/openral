@@ -20,9 +20,21 @@ height; actuated joints snap to Hub ``default_joint_pos``
 
 from __future__ import annotations
 
+import sys
 import time
+from pathlib import Path
+from types import ModuleType
 
 import pytest
+
+# Go2 tests only need go2.py + MujocoArmHAL. The package __init__ imports
+# SO-100 / lerobot siblings; skip that when lerobot is not installed.
+try:
+    import lerobot  # noqa: F401
+except ImportError:
+    _hal_pkg = ModuleType("openral_hal")
+    _hal_pkg.__path__ = [str(Path(__file__).resolve().parents[2] / "python/hal/src/openral_hal")]
+    sys.modules.setdefault("openral_hal", _hal_pkg)
 
 try:
     import mujoco
@@ -49,8 +61,12 @@ from openral_core import (
     ROSConfigError,
     ROSRuntimeError,
 )
-from openral_hal import GO2_DESCRIPTION, Go2MujocoHAL
-from openral_hal.go2 import GO2_HOME_JOINT_TARGETS, GO2_HUB_DEFAULT_JOINT_POS
+from openral_hal.go2 import (
+    GO2_DESCRIPTION,
+    GO2_HOME_JOINT_TARGETS,
+    GO2_HUB_DEFAULT_JOINT_POS,
+    Go2MujocoHAL,
+)
 from openral_hal.resolver import build_hal
 
 pytestmark = [

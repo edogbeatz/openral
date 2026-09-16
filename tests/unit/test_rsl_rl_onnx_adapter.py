@@ -13,8 +13,6 @@ from typing import get_args
 
 import numpy as np
 import pytest
-from structlog.testing import capture_logs
-
 from openral_core.exceptions import ROSConfigError
 from openral_core.schemas import (
     ModelFamily,
@@ -24,8 +22,8 @@ from openral_core.schemas import (
 )
 from openral_sim.factory import make_policy
 from openral_sim.policies.rsl_rl_onnx import (
-    RSL_RL_ONNX_FAMILY,
     _OBS_FALLBACK_WARNED,
+    RSL_RL_ONNX_FAMILY,
     _base_ang_vel_from_obs,
     _projected_gravity_from_obs,
     apply_velocity_command_override,
@@ -38,6 +36,7 @@ from openral_sim.policies.rsl_rl_onnx import (
     write_zero_action_onnx,
 )
 from openral_sim.registry import POLICIES
+from structlog.testing import capture_logs
 
 _REPO = Path(__file__).resolve().parents[2]
 _MANIFEST = _REPO / "rskills" / "rsl-rl-onnx-go2-velocity-flat" / "rskill.yaml"
@@ -195,9 +194,7 @@ def test_make_policy_emits_12d_joint_positions(tmp_path: Path) -> None:
     (skill_dir / "params" / "deploy.yaml").write_text(
         _DEPLOY.read_text(encoding="utf-8"), encoding="utf-8"
     )
-    (skill_dir / "rskill.yaml").write_text(
-        _MANIFEST.read_text(encoding="utf-8"), encoding="utf-8"
-    )
+    (skill_dir / "rskill.yaml").write_text(_MANIFEST.read_text(encoding="utf-8"), encoding="utf-8")
     write_zero_action_onnx(
         skill_dir / "policy.onnx",
         observation_dim=cfg.observation_dim,
@@ -310,6 +307,8 @@ def test_attach_locomotion_proprio_copies_pose_and_override() -> None:
     }
 
     empty: dict[str, object] = {}
-    _attach_locomotion_proprio(empty, SimpleNamespace(joint_state=None, base_twist=None, base_pose=None))
+    _attach_locomotion_proprio(
+        empty, SimpleNamespace(joint_state=None, base_twist=None, base_pose=None)
+    )
     assert "base_ang_vel" not in empty
     assert "base_pose" not in empty

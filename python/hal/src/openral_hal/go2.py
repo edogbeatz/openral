@@ -95,7 +95,7 @@ _GO2_JOINT_NAMES: tuple[str, ...] = tuple(
 )
 
 # Hub ``params/deploy.yaml`` ``default_joint_pos`` (diasAiMaster/unitree-go2-velocity-flat).
-# Menagerie FL/FR/RL/RR × hip/thigh/calf order. Hip ±0.1 (not menagerie home 0.0).
+# Menagerie FL/FR/RL/RR x hip/thigh/calf order. Hip +/-0.1 (not menagerie home 0.0).
 # Calf range excludes 0 — tests must command around this stand, not zeros.
 GO2_HUB_DEFAULT_JOINT_POS: tuple[float, ...] = (
     -0.1,
@@ -395,7 +395,7 @@ class Go2MujocoHAL(MujocoArmHAL):
             act_idx = self._actuator_index.get(name)
             if act_idx is not None:
                 self._data.ctrl[act_idx] = float(target)
-        import mujoco as mj  # reason: optional sim-only dep
+        import mujoco as mj  # noqa: PLC0415  # reason: optional sim-only dep
 
         mj.mj_forward(self._model, self._data)
 
