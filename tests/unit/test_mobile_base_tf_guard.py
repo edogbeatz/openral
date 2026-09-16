@@ -23,7 +23,7 @@ from pathlib import Path
 
 from openral_core import RobotDescription
 from openral_core.schemas import RobotCapabilities
-from openral_hal.mobile_base_bridge import describes_mobile_base
+from openral_hal.mobile_base_bridge import describes_floating_base, describes_mobile_base
 
 _REPO = Path(__file__).resolve().parents[2]
 
@@ -78,3 +78,38 @@ def test_footprint_radius_decides_nothing_in_either_direction() -> None:
     franka = _description("franka_panda")
     with_nav2_tuning = franka.model_copy(update={"footprint_radius": 0.35})
     assert not describes_mobile_base(with_nav2_tuning)
+
+
+def test_quadruped_is_floating_not_mobile() -> None:
+    """A legged robot declares no ``base_joints`` but its body still travels.
+
+    Both predicates must be consulted: reading only ``describes_mobile_base``
+    classifies the Go2 as "fixed" and pins it under a static
+    ``world -> base``, which is why a walking policy animated the legs while
+    the torso stayed at spawn.
+    """
+    go2 = _description("go2")
+
+    assert go2.base_joints is None
+    assert not describes_mobile_base(go2)
+    assert describes_floating_base(go2)
+
+
+def test_fixed_and_mobile_bases_are_not_floating() -> None:
+    """The three cases are disjoint, so the bridge's branch order cannot alias them."""
+    assert not describes_floating_base(_description("franka_panda"))
+    assert not describes_floating_base(_description("panda_mobile"))
+
+
+def test_floating_base_reads_the_sim_block_not_the_embodiment_kind() -> None:
+    """``sim.floating_base`` is the field, not a guess from ``embodiment_kind``.
+
+    A quadruped manifest with no ``sim`` block has no free joint to track and
+    must keep the static root; keying off ``embodiment_kind == "quadruped"``
+    would hand it a live ``odom -> base`` nothing publishes.
+    """
+    go2 = _description("go2")
+    assert go2.embodiment_kind == "quadruped"
+
+    without_sim = go2.model_copy(update={"sim": None})
+    assert not describes_floating_base(without_sim)

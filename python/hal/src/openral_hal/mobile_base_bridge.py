@@ -63,6 +63,28 @@ def describes_mobile_base(description: RobotDescription) -> bool:
     return bool(description.base_joints)
 
 
+def describes_floating_base(description: RobotDescription) -> bool:
+    """Whether ``description`` declares a free-floating sim base (legged robots).
+
+    The other half of "does something already own ``base_frame``'s parent?".
+    A quadruped/humanoid declares no ``base_joints`` — its base is a MuJoCo
+    free joint, not a planar drive — so ``describes_mobile_base`` is False and
+    the sim sensor bridge would otherwise pin it under a STATIC
+    ``world -> base_frame``. That is correct for a bolted-down arm and wrong
+    for anything that walks: the legs animate while the body never translates.
+
+    Such a robot gets a static ``world -> odom_frame`` identity root plus the
+    live ``odom -> base_frame`` this bridge publishes.
+
+    Args:
+        description: The robot manifest.
+
+    Returns:
+        ``True`` when the manifest's ``sim`` block declares ``floating_base``.
+    """
+    return bool(description.sim is not None and description.sim.floating_base)
+
+
 class MobileBaseBridge:
     """Owns ``/odom`` + ``odom->base_link`` TF + ``/cmd_vel``→BODY_TWIST for a node.
 

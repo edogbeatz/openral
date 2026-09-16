@@ -26,7 +26,7 @@ from collections import deque
 from typing import TYPE_CHECKING, Any
 
 from openral_hal.convex_distance import ConvexDistance, convex_geom_distance
-from openral_hal.mobile_base_bridge import describes_mobile_base
+from openral_hal.mobile_base_bridge import describes_floating_base, describes_mobile_base
 
 # Throttle dashboard thumbnail emission to ~1 Hz per camera (1e9 ns).
 # The live ROS topic stays at the higher camera_rate_hz; only the OTel
@@ -3105,11 +3105,24 @@ class SimSensorBridge:
         tree (detected via
         ``describes_mobile_base``, the same
         predicate the lifecycle node attaches the ``odom`` publisher on).
+
+        A FLOATING base (legged) is the third case: it declares no
+        ``base_joints``, so it is not "mobile" by that predicate, but its body
+        genuinely moves. Pinning it under a static ``world -> base`` makes a
+        walking robot animate its legs while never translating on ``/tf``.
+        Those get a static ``world -> odom`` identity instead — the world root
+        every consumer looks up is preserved, and ``MobileBaseBridge`` supplies
+        the live ``odom -> base`` beneath it. Identity is exact, not an
+        approximation: this bridge and that one both read the same MuJoCo world
+        pose, so the odom frame IS the world frame.
         """
         if self._world_base_published:
             return
         if describes_mobile_base(self._description):
             self._world_base_published = True  # mobile: odom owns base->world; nothing to do
+            return
+        if describes_floating_base(self._description):
+            self._publish_world_odom_identity()
             return
         if self._base_frame_body is None:
             return
@@ -3145,6 +3158,31 @@ class SimSensorBridge:
             f"published static world->{base_frame_id} at "
             f"[{float(pos[0]):.3f}, {float(pos[1]):.3f}, {float(pos[2]):.3f}] "
             "(fixed-base sim world root)"
+        )
+
+    def _publish_world_odom_identity(self) -> None:
+        """Publish the latched ``world -> odom_frame`` identity root for a floating base.
+
+        Reads no MuJoCo state: the odom frame a floating-base robot reports
+        against IS the sim world frame, so the transform is exactly identity
+        and stays correct however far the robot walks.
+        """
+        from geometry_msgs.msg import TransformStamped
+        from tf2_ros import StaticTransformBroadcaster
+
+        if self._static_tf_broadcaster is None:
+            self._static_tf_broadcaster = StaticTransformBroadcaster(self._node)
+        odom_frame_id = getattr(self._description, "odom_frame", "odom")
+        tf = TransformStamped()
+        tf.header.stamp = self._node.get_clock().now().to_msg()
+        tf.header.frame_id = "world"
+        tf.child_frame_id = odom_frame_id
+        tf.transform.rotation.w = 1.0
+        self._static_tf_broadcaster.sendTransform(tf)
+        self._world_base_published = True
+        self._node.get_logger().info(
+            f"published static world->{odom_frame_id} identity "
+            "(floating-base sim world root; odom->base is live)"
         )
 
     # -- Sim-only free-running idle stepper --

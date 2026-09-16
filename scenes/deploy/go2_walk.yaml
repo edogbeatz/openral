@@ -1,0 +1,109 @@
+# Unitree Go2 quadruped walk bench — deploy playground (bare MuJoCo digital twin).
+#
+# The gravity-ON sibling of `scenes/deploy/go2_bench.yaml`. That bench pins
+# gravity off so the floating base holds the Hub stand with no controller;
+# this one turns gravity back on so a locomotion policy has something to do.
+# Pair with the rsl-rl ONNX velocity policy:
+#
+#   openral deploy sim --config scenes/deploy/go2_walk.yaml --dashboard --foxglove
+#   ros2 action send_goal /openral/execute_rskill openral_msgs/action/ExecuteRskill \
+#     "{rskill_id: 'OpenRAL/rskill-rsl_rl_onnx-go2-velocity_flat-fp32', \
+#       goal_params_json: '{\"velocity_commands\": [0.5, 0.0, 0.0]}', \
+#       deadline_s: 30.0}"
+#
+# `gravity_enabled` is a HAL construction kwarg, not a ROS param the node
+# declares on its own — it reaches `build_hal` through the lifecycle node's
+# `gravity_enabled` parameter, which merges OVER the `robots/go2/robot.yaml`
+# `hal.parameters.defaults` value of False. Same seam `g1_vln.yaml` uses for
+# `walking_enabled`.
+#
+# `deploy run` is refused (`hal.real` is null). Sim-only, like the bench.
+hal:
+  defaults:
+    gravity_enabled: true
+
+# Gravity without ground is just a long fall. The bare twin loads the robot
+# model alone (menagerie keeps terrain in a separate `scene.xml` OpenRAL does
+# not load), and the HAL camera rig's staging floor is deliberately
+# `contype="0" conaffinity="0"` — visual only, so it never contacts the robot
+# or the safety kernel. Before this composer the go2 free-fell to odom
+# z ≈ −242175 m in 37 s. Scene-level because only the scene knows whether this
+# robot is a gravity-off contract validator or a walking one.
+composition:
+  composer: "openral_sim.scene_composers:compose_ground_plane_mjcf"
+  params:
+    mjcf_ref: "rd:go2_mj_description"
+
+# ACM INHERITED FROM go2_bench, NOT RE-DERIVED FOR GAIT.
+#
+# These 38 pairs are MJCF-lowered conservative capsule overlaps at the Hub
+# home stand (hip ±0.1, thigh 0.9, calf −1.8). That stand is also this
+# scene's spawn pose and the walk policy's `starting_pose`, so without them
+# the kernel trips self-collision at t=0 and nothing runs.
+#
+# They are justified for the STAND only. Nobody has swept them across the
+# gait envelope, so a genuine base↔calf or calf↔thigh contact mid-stride is
+# admitted here rather than caught. Sim-only containment: the Go2 has no
+# real HAL (`hal.real: null`), so this cannot reach hardware. Narrowing this
+# to a gait-swept set is the open follow-up before any real-HW Go2 lands.
+extra_allowed_collision_pairs:
+  - [base, FL_calf]
+  - [base, FR_calf]
+  - [base, RL_calf]
+  - [base, RR_calf]
+  - [FL_hip, FL_calf]
+  - [FR_hip, FR_calf]
+  - [RL_hip, RL_calf]
+  - [RR_hip, RR_calf]
+  - [FL_thigh, FR_thigh]
+  - [RL_thigh, RR_thigh]
+  - [base, FL_thigh]
+  - [base, FR_thigh]
+  - [base, RL_thigh]
+  - [base, RR_thigh]
+  - [FL_calf, FR_thigh]
+  - [FL_calf, RL_thigh]
+  - [FL_calf, RR_thigh]
+  - [FR_calf, FL_thigh]
+  - [FR_calf, RL_thigh]
+  - [FR_calf, RR_thigh]
+  - [RL_calf, FL_thigh]
+  - [RL_calf, FR_thigh]
+  - [RL_calf, RR_thigh]
+  - [RR_calf, FL_thigh]
+  - [RR_calf, FR_thigh]
+  - [RR_calf, RL_thigh]
+  - [FL_calf, FR_hip]
+  - [FL_calf, RL_hip]
+  - [FL_calf, RR_hip]
+  - [FR_calf, FL_hip]
+  - [FR_calf, RL_hip]
+  - [FR_calf, RR_hip]
+  - [RL_calf, FL_hip]
+  - [RL_calf, FR_hip]
+  - [RL_calf, RR_hip]
+  - [RR_calf, FL_hip]
+  - [RR_calf, FR_hip]
+  - [RR_calf, RL_hip]
+scene:
+  id: go2_walk
+robot_id: go2
+# Proprio-only policy: no lidar/depth on the bare twin, and the ONNX net
+# consumes base pose / twist from the HAL, not pixels. Every perception and
+# nav leg stays off, exactly as on the bench.
+runtime:
+  enable_slam: false
+  enable_nav2: false
+  enable_octomap: false
+  enable_octomap_kernel_check: true
+  enable_object_detector: false
+  object_detector_onnx: null
+  object_detector_manifest: null
+  object_detector_query: null
+  object_detector_locators: null
+  enable_reward_monitor: false
+  reward_monitor_manifest: null
+  reward_monitor_task: null
+  enable_critic: false
+  spatial_memory_ingest: false
+  approach_skill_id: null

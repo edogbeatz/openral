@@ -1735,8 +1735,11 @@ if _ROS2_AVAILABLE:
                 self._mobile_base.setup()
             elif callable(getattr(self._hal, "base_pose_6dof", None)):
                 # Floating-base quadruped (Go2): publish /odom so WorldState
-                # can fill rsl-rl base_ang_vel + projected_gravity. No TF
-                # (sensor bridge already owns world->base) and no /cmd_vel
+                # can fill rsl-rl base_ang_vel + projected_gravity, and the live
+                # `odom -> base` TF so the body actually travels on /tf once a
+                # locomotion policy drives it. The sensor bridge roots the tree
+                # with a static `world -> odom` identity for exactly this case,
+                # so there is no second parent for `base`. Still no /cmd_vel
                 # (Go2 has no BODY_TWIST contract).
                 from openral_hal.mobile_base_bridge import MobileBaseBridge
 
@@ -1749,7 +1752,7 @@ if _ROS2_AVAILABLE:
                     .double_value,
                     cmd_vel_topic="",
                     proprio=self._proprio,
-                    publish_tf=False,
+                    publish_tf=True,
                 )
                 self._mobile_base.setup()
 
