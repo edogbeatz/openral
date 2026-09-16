@@ -159,9 +159,7 @@ def load_rsl_rl_deploy_yaml(path: Path | str) -> RslRlOnnxDeployConfig:
     default = _float_vec(loaded.get("default_joint_pos"), name="default_joint_pos")
     actions = loaded.get("actions")
     if not isinstance(actions, dict) or "JointPositionAction" not in actions:
-        raise ROSConfigError(
-            f"rsl_rl_onnx: {yaml_path} has no actions.JointPositionAction block"
-        )
+        raise ROSConfigError(f"rsl_rl_onnx: {yaml_path} has no actions.JointPositionAction block")
     jp = actions["JointPositionAction"]
     if not isinstance(jp, dict):
         raise ROSConfigError(
@@ -176,9 +174,7 @@ def load_rsl_rl_deploy_yaml(path: Path | str) -> RslRlOnnxDeployConfig:
 
     n = int(default.shape[0])
     raw_map = loaded.get("joint_ids_map")
-    joint_ids_map = (
-        np.arange(n, dtype=np.intp) if raw_map is None else _joint_ids_map(raw_map, n=n)
-    )
+    joint_ids_map = np.arange(n, dtype=np.intp) if raw_map is None else _joint_ids_map(raw_map, n=n)
 
     observations = loaded.get("observations")
     if not isinstance(observations, dict) or not observations:
@@ -616,12 +612,8 @@ def write_zero_action_onnx(path: Path | str, *, observation_dim: int, action_dim
     zeros = numpy_helper.from_array(
         np.zeros((1, action_dim), dtype=np.float32), name="actions_const"
     )
-    obs_in = helper.make_tensor_value_info(
-        "obs", onnx.TensorProto.FLOAT, [1, observation_dim]
-    )
-    act_out = helper.make_tensor_value_info(
-        "actions", onnx.TensorProto.FLOAT, [1, action_dim]
-    )
+    obs_in = helper.make_tensor_value_info("obs", onnx.TensorProto.FLOAT, [1, observation_dim])
+    act_out = helper.make_tensor_value_info("actions", onnx.TensorProto.FLOAT, [1, action_dim])
     passthrough_out = helper.make_tensor_value_info(
         "obs_passthrough", onnx.TensorProto.FLOAT, [1, observation_dim]
     )
@@ -708,9 +700,7 @@ def _download_hub_assets(
         ) from exc
     repo_id, revision = _split_hf_repo(hub_uri)
     try:
-        onnx_path = Path(
-            hf_hub_download(repo_id=repo_id, filename=onnx_name, revision=revision)
-        )
+        onnx_path = Path(hf_hub_download(repo_id=repo_id, filename=onnx_name, revision=revision))
     except Exception as exc:
         raise ROSConfigError(
             f"rsl_rl_onnx: failed to download hf://{repo_id}/{onnx_name}: {exc}"
@@ -722,9 +712,7 @@ def _download_hub_assets(
     except EntryNotFoundError:
         log.debug("rsl_rl_onnx.no_external_data", repo=repo_id, filename=data_name)
     try:
-        deploy_path = Path(
-            hf_hub_download(repo_id=repo_id, filename=deploy_rel, revision=revision)
-        )
+        deploy_path = Path(hf_hub_download(repo_id=repo_id, filename=deploy_rel, revision=revision))
     except Exception as exc:
         raise ROSConfigError(
             f"rsl_rl_onnx: failed to download hf://{repo_id}/{deploy_rel}: {exc}"
@@ -812,9 +800,7 @@ def _term_width(name: str, scale: object) -> int:
         return len(scale)
     if name in _ISAAC_TERM_WIDTHS:
         return _ISAAC_TERM_WIDTHS[name]
-    raise ROSConfigError(
-        f"rsl_rl_onnx: observation {name!r} has no scale list and no known width"
-    )
+    raise ROSConfigError(f"rsl_rl_onnx: observation {name!r} has no scale list and no known width")
 
 
 def _joint_ids_map(raw: object, *, n: int) -> NDArray[np.intp]:
@@ -831,7 +817,9 @@ def _joint_ids_map(raw: object, *, n: int) -> NDArray[np.intp]:
     return mapped
 
 
-def _gather(values: NDArray[np.float32], joint_ids_map: NDArray[np.intp], *, name: str) -> NDArray[np.float32]:
+def _gather(
+    values: NDArray[np.float32], joint_ids_map: NDArray[np.intp], *, name: str
+) -> NDArray[np.float32]:
     vec = np.asarray(values, dtype=np.float32).reshape(-1)
     if vec.shape[0] <= int(joint_ids_map.max()):
         raise ROSConfigError(
@@ -887,9 +875,7 @@ def _goal_params_mapping(
 
         loaded = json.loads(text)
     except ValueError as exc:
-        raise ROSConfigError(
-            f"rsl_rl_onnx: goal_params_json is not valid JSON: {text!r}"
-        ) from exc
+        raise ROSConfigError(f"rsl_rl_onnx: goal_params_json is not valid JSON: {text!r}") from exc
     if not isinstance(loaded, dict):
         raise ROSConfigError(
             f"rsl_rl_onnx: goal_params_json must be a JSON object, got {type(loaded)}"
@@ -927,19 +913,22 @@ def _as_float_vec(raw: object, *, n: int, name: str) -> NDArray[np.float32] | No
     return vec[:n]
 
 
-def _joint_pos_from_obs(observation: Observation, config: RslRlOnnxDeployConfig) -> NDArray[np.float32]:
+def _joint_pos_from_obs(
+    observation: Observation, config: RslRlOnnxDeployConfig
+) -> NDArray[np.float32]:
     n = config.default_joint_pos.shape[0]
     for key in ("joint_pos", "state"):
         vec = _as_float_vec(observation.get(key), n=n, name=key)
         if vec is not None:
             return vec
     raise ROSConfigError(
-        "rsl_rl_onnx: observation is missing joint positions "
-        "(expected 'joint_pos' or 'state')"
+        "rsl_rl_onnx: observation is missing joint positions (expected 'joint_pos' or 'state')"
     )
 
 
-def _joint_vel_from_obs(observation: Observation, config: RslRlOnnxDeployConfig) -> NDArray[np.float32]:
+def _joint_vel_from_obs(
+    observation: Observation, config: RslRlOnnxDeployConfig
+) -> NDArray[np.float32]:
     n = config.default_joint_pos.shape[0]
     vec = _as_float_vec(observation.get("joint_vel"), n=n, name="joint_vel")
     if vec is not None:

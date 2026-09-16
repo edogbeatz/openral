@@ -225,9 +225,7 @@ def test_goal_params_override_reaches_the_real_adapter(tmp_path: Path) -> None:
 
     policy = _zero_action_policy(tmp_path)
     try:
-        applied = apply_velocity_command_override(
-            policy, '{"velocity_commands": [0.7, -0.2, 0.3]}'
-        )
+        applied = apply_velocity_command_override(policy, '{"velocity_commands": [0.7, -0.2, 0.3]}')
         assert applied is not None
         np.testing.assert_allclose(policy._velocity_commands, [0.7, -0.2, 0.3])
         # Empty payload restores the manifest default rather than sticking.
