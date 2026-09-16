@@ -1718,6 +1718,25 @@ if _ROS2_AVAILABLE:
                     proprio=self._proprio,
                 )
                 self._mobile_base.setup()
+            elif callable(getattr(self._hal, "base_pose_6dof", None)):
+                # Floating-base quadruped (Go2): publish /odom so WorldState
+                # can fill rsl-rl base_ang_vel + projected_gravity. No TF
+                # (sensor bridge already owns world->base) and no /cmd_vel
+                # (Go2 has no BODY_TWIST contract).
+                from openral_hal.mobile_base_bridge import MobileBaseBridge
+
+                self._mobile_base = MobileBaseBridge(
+                    self,
+                    self._hal,
+                    self._hal.description,
+                    odom_rate_hz=self.get_parameter("odom_publish_rate_hz")
+                    .get_parameter_value()
+                    .double_value,
+                    cmd_vel_topic="",
+                    proprio=self._proprio,
+                    publish_tf=False,
+                )
+                self._mobile_base.setup()
 
             self._setup_vision_attachment()
             return TransitionCallbackReturn.SUCCESS

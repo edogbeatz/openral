@@ -31,7 +31,8 @@ Public surface:
   ``G1MujocoHAL``; real-HW also waits on the M2 S0 cerebellum.
 - ``Go2MujocoHAL`` / ``GO2_DESCRIPTION``: Unitree Go2, 12-DoF quadruped
   (sim-only spike). H1-style software PD over menagerie torque motors;
-  gravity off in ``hal.parameters.defaults``. No gait / real HAL.
+  gravity off in ``hal.parameters.defaults``. Hub stand (hip ±0.1);
+  ``base_pose_6dof`` / ``base_twist`` for rsl-rl. No gait / real HAL.
 - ``Rizon4MujocoHAL`` / ``RIZON4_DESCRIPTION``: Flexiv Rizon 4, 7-DoF
   cobot, whole-body force sensitivity; structurally like the UR/Franka
   sim HALs.

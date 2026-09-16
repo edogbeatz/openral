@@ -82,6 +82,7 @@ class MobileBaseBridge:
         odom_rate_hz: float = 20.0,
         cmd_vel_topic: str = "/cmd_vel",
         proprio: Any = None,
+        publish_tf: bool = True,
     ) -> None:
         """Bind node + HAL + manifest; opens no publishers until ``setup``.
 
@@ -92,6 +93,11 @@ class MobileBaseBridge:
         ``publish_from_snapshot``, which reads this plain-data snapshot rather
         than the simulator. ``None`` (real HALs) keeps the legacy odom timer
         reading ``hal.base_pose`` directly.
+
+        ``publish_tf``: planar mobile bases publish ``odom -> base_frame``.
+        Floating-base quadrupeds (Go2) publish ``/odom`` only so WorldState
+        can fill rsl-rl IMU / pose terms without adding a second TF parent
+        beside the sim sensor bridge's ``world -> base_frame``.
         """
         self._node = node
         self._hal = hal
@@ -99,6 +105,7 @@ class MobileBaseBridge:
         self._odom_rate_hz = odom_rate_hz
         self._cmd_vel_topic = cmd_vel_topic
         self._proprio = proprio
+        self._publish_tf = publish_tf
         self._odom_frame = description.odom_frame
         self._base_frame = description.base_frame
         self._odom_pub: Any = None
@@ -110,7 +117,6 @@ class MobileBaseBridge:
         """Create the ``/odom`` publisher + TF broadcaster + timer + ``/cmd_vel`` sub."""
         from nav_msgs.msg import Odometry
         from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
-        from tf2_ros import TransformBroadcaster
 
         # /odom is RELIABLE — Nav2 wants every sample.
         odom_qos = QoSProfile(
@@ -119,7 +125,10 @@ class MobileBaseBridge:
             depth=10,
         )
         self._odom_pub = self._node.create_publisher(Odometry, "/odom", odom_qos)
-        self._tf_broadcaster = TransformBroadcaster(self._node)
+        if self._publish_tf:
+            from tf2_ros import TransformBroadcaster
+
+            self._tf_broadcaster = TransformBroadcaster(self._node)
         # Sim-attached HALs publish odom from the node's dedicated
         # thread (``publish_from_snapshot``); only the legacy (real-HAL /
         # in-process-twin) path drives it from a timer on the executor thread.
@@ -143,7 +152,8 @@ class MobileBaseBridge:
             )
         self._node.get_logger().info(
             f"MobileBaseBridge: /odom @ {self._odom_rate_hz:.1f} Hz, "
-            f"TF {self._odom_frame}->{self._base_frame}, "
+            f"TF {self._odom_frame}->{self._base_frame} "
+            f"({'on' if self._publish_tf else 'off'}), "
             f"cmd_vel={self._cmd_vel_topic or '(disabled)'}"
         )
 

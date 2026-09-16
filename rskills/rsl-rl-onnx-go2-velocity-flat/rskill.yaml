@@ -19,9 +19,9 @@ model_family: "rsl_rl_onnx"
 embodiment_tags:
   - "go2"
 
-# Proprio-only. The policy does not consume cameras. IMU / base pose are
-# read from WorldState when the HAL publishes them; the adapter falls back
-# to zeros / identity gravity when they are absent (Go2 MuJoCo HAL gap).
+# Proprio-only. The policy does not consume cameras. IMU / base pose come
+# from Go2MujocoHAL base_pose_6dof + base_twist via /odom → WorldState.
+# Adapter falls back to zeros / identity gravity (one-shot warning) if absent.
 actuators_required:
   - kind: "joint_position"
     control_mode_semantics:
@@ -42,12 +42,33 @@ latency_budget:
   max_execution_s: 60.0
 
 # Velocity command is NOT derived from the reasoner prompt. Isaac Lab's
-# `velocity_commands` term is a 3-D joystick; execute_rskill reads this
-# extra so a tick can run without a nav stack. Override per deploy.
+# `velocity_commands` term is a 3-D joystick. YAML here is the default.
+# Per-call override (no YAML edit): ExecuteRskill.goal_params_json
+# `{"velocity_commands": [vx, vy, yaw]}` or VLASpec.extra / obs key.
 policy_extras:
   velocity_commands: [0.5, 0.0, 0.0]
   onnx_filename: "policy.onnx"
   deploy_yaml: "params/deploy.yaml"
+
+# Reasoner tool palette surfaces this as execute_rskill.goal_params_json.
+goal_params_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    velocity_commands:
+      type: array
+      minItems: 3
+      maxItems: 3
+      items:
+        type: number
+      description: >
+        Isaac Lab joystick [vx, vy, yaw_rate] in m/s and rad/s. Overrides
+        policy_extras.velocity_commands for this execute_rskill / verify
+        call. Omit to keep the YAML default.
+
+# Hub params/deploy.yaml default_joint_pos (HAL / menagerie order).
+# Aligns spawn / reset_to_pose with trained stand (hip ±0.1).
+starting_pose: [-0.1, 0.9, -1.8, 0.1, 0.9, -1.8, -0.1, 0.9, -1.8, 0.1, 0.9, -1.8]
 
 # ── Provenance ─────────────────────────────────────────────────────────────
 source_repo: "hf://diasAiMaster/unitree-go2-velocity-flat"
@@ -56,8 +77,9 @@ paper_url: "https://github.com/unitreerobotics/unitree_rl_mjlab"
 description: >
   Isaac Lab / Unitree rsl-rl ONNX locomotion for the 12-DoF Go2. Loads
   policy.onnx plus params/deploy.yaml and emits absolute JOINT_POSITION
-  targets. Velocity command comes from policy_extras, not the reasoner
-  prompt. Does not claim gait quality.
+  targets. Velocity command defaults to policy_extras; execute_rskill /
+  verify override via goal_params_json without editing YAML. Does not
+  claim gait quality.
 
 actions:
   - "navigate"

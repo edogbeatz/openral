@@ -13,15 +13,28 @@ so ``Action.joint_targets`` stay position-shaped.
 
 Gravity is disabled in every test: there is no gait / contact
 controller, so the twin falls under gravity. Calf limits exclude 0 rad;
-``sim.keyframe_index: 0`` loads the menagerie ``home`` stand
-``(0, 0.9, -1.8)`` per leg. Tests never command calves to 0.
+``sim.keyframe_index: 0`` loads the menagerie ``home`` stand for free-joint
+height; actuated joints snap to Hub ``default_joint_pos``
+``(hip ±0.1, thigh 0.9, calf -1.8)``. Tests never command calves to 0.
 """
 
 from __future__ import annotations
 
+import sys
 import time
+from pathlib import Path
+from types import ModuleType
 
 import pytest
+
+# Go2 tests only need go2.py + MujocoArmHAL. The package __init__ imports
+# SO-100 / lerobot siblings; skip that when lerobot is not installed.
+try:
+    import lerobot  # noqa: F401
+except ImportError:
+    _hal_pkg = ModuleType("openral_hal")
+    _hal_pkg.__path__ = [str(Path(__file__).resolve().parents[2] / "python/hal/src/openral_hal")]
+    sys.modules.setdefault("openral_hal", _hal_pkg)
 
 try:
     import mujoco
@@ -46,9 +59,14 @@ from openral_core import (
     JointType,
     ROSCapabilityMismatch,
     ROSConfigError,
+    ROSRuntimeError,
 )
-from openral_hal import GO2_DESCRIPTION, Go2MujocoHAL
-from openral_hal.go2 import GO2_HOME_JOINT_TARGETS
+from openral_hal.go2 import (
+    GO2_DESCRIPTION,
+    GO2_HOME_JOINT_TARGETS,
+    GO2_HUB_DEFAULT_JOINT_POS,
+    Go2MujocoHAL,
+)
 from openral_hal.resolver import build_hal
 
 pytestmark = [
@@ -135,7 +153,9 @@ class TestGo2Description:
         assert GO2_DESCRIPTION.safety.deadman_required is True
 
     def test_home_targets_sit_inside_limits(self) -> None:
-        assert GO2_HOME_JOINT_TARGETS == (0.0, 0.9, -1.8) * 4
+        assert GO2_HOME_JOINT_TARGETS == GO2_HUB_DEFAULT_JOINT_POS
+        assert GO2_HOME_JOINT_TARGETS[0] == pytest.approx(-0.1)
+        assert GO2_HOME_JOINT_TARGETS[3] == pytest.approx(0.1)
         for joint, q in zip(GO2_DESCRIPTION.joints, GO2_HOME_JOINT_TARGETS, strict=True):
             assert joint.position_limits is not None
             lo, hi = joint.position_limits
@@ -273,3 +293,39 @@ class TestClosedLoopMujoco:
             assert abs(state.position[i] - GO2_HOME_JOINT_TARGETS[i]) < 8e-2, (
                 f"joint {state.name[i]!r} moved away from home"
             )
+
+
+class TestGo2BaseProprio:
+    """1-197 / 1-198 — floating-base pose/twist + Hub stand after connect()."""
+
+    def test_base_pose_requires_connect(self, hal: Go2MujocoHAL) -> None:
+        with pytest.raises(ROSRuntimeError, match="base_pose_6dof"):
+            _ = hal.base_pose_6dof()
+        with pytest.raises(ROSRuntimeError, match="base_twist"):
+            _ = hal.base_twist
+
+    def test_base_pose_6dof_identity_stand(self, connected_hal: Go2MujocoHAL) -> None:
+        xyz, quat_xyzw = connected_hal.base_pose_6dof()
+        assert len(xyz) == 3
+        assert xyz[2] > 0.2  # menagerie home free-joint height
+        qx, qy, qz, qw = quat_xyzw
+        # Identity-ish stand: projected gravity ≈ [0, 0, -1].
+        assert abs(qx) < 0.05
+        assert abs(qy) < 0.05
+        assert abs(qz) < 0.05
+        assert qw == pytest.approx(1.0, abs=0.05)
+        x, y, yaw = connected_hal.base_pose
+        assert x == pytest.approx(xyz[0], abs=1e-6)
+        assert y == pytest.approx(xyz[1], abs=1e-6)
+        assert abs(yaw) < 0.1
+
+    def test_base_twist_is_six_tuple_at_rest(self, connected_hal: Go2MujocoHAL) -> None:
+        twist = connected_hal.base_twist
+        assert len(twist) == 6
+        assert all(abs(v) < 1e-3 for v in twist)
+
+    def test_hips_match_hub_after_connect(self, connected_hal: Go2MujocoHAL) -> None:
+        state = connected_hal.read_state()
+        assert state.position[0] == pytest.approx(-0.1, abs=1e-3)
+        assert state.position[3] == pytest.approx(0.1, abs=1e-3)
+        assert tuple(state.position) == pytest.approx(GO2_HUB_DEFAULT_JOINT_POS, abs=1e-3)

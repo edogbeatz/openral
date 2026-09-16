@@ -13,9 +13,18 @@ Velocity command
 ----------------
 Isaac Lab ``velocity_commands`` is a 3-D joystick ``[vx, vy, yaw_rate]``.
 The reasoner prompt is natural language and is **not** mapped onto that
-vector. ``execute_rskill`` therefore reads ``policy_extras.velocity_commands``
-(default ``[0.5, 0.0, 0.0]``) so a locomotion tick can run without a nav
-stack. Documented as a hackathon gap in the rSkill README.
+vector. YAML ``policy_extras.velocity_commands`` (default ``[0.5, 0.0, 0.0]``)
+is the load-time fallback so a locomotion tick can run without a nav stack.
+
+Per-call override (does not require editing the rSkill YAML), highest wins:
+
+1. ``observation["velocity_commands"]`` on this ``step()`` (runner / verify).
+2. ``ExecuteRskill.goal_params_json`` ``{"velocity_commands": [vx, vy, yaw]}``
+   applied onto the resident skill (see :func:`velocity_override_from_goal_params`).
+3. ``VLASpec.extra["velocity_commands"]`` merged over the YAML extras at
+   ``make_policy`` time.
+
+Empty extras / empty goal_params keep the YAML default.
 
 Action
 ------
@@ -56,6 +65,7 @@ _DEFAULT_ONNX_FILENAME: Final[str] = "policy.onnx"
 _DEFAULT_DEPLOY_REL: Final[str] = "params/deploy.yaml"
 _DEFAULT_VELOCITY_COMMANDS: tuple[float, float, float] = (0.5, 0.0, 0.0)
 _GRAVITY_WORLD: NDArray[np.float32] = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+_OBS_FALLBACK_WARNED: set[str] = set()
 
 # Isaac Lab term widths used only when ``deploy.yaml`` gives a scalar scale.
 # Term *names* still come from the YAML observation block.
@@ -204,7 +214,8 @@ def resolve_velocity_commands(
     """Read ``[vx, vy, yaw_rate]`` from ``policy_extras`` / ``VLASpec.extra``.
 
     The reasoner prompt is ignored. Missing / empty extras fall back to
-    ``default`` (a modest forward walk).
+    ``default`` (a modest forward walk). Per-call overrides belong in
+    :func:`velocity_override_from_goal_params` or ``obs["velocity_commands"]``.
 
     Args:
         extra: Manifest ``policy_extras`` merged with ``VLASpec.extra``.
@@ -225,12 +236,81 @@ def resolve_velocity_commands(
     raw = extra.get("velocity_commands", extra.get("velocity_command"))
     if raw is None:
         return np.asarray(default, dtype=np.float32)
-    vec = _float_vec(raw, name="velocity_commands")
-    if vec.shape != (3,):
-        raise ROSConfigError(
-            f"rsl_rl_onnx: velocity_commands must be a 3-vector [vx, vy, yaw]; got {vec.shape}"
-        )
-    return vec
+    return _as_velocity_command_vec(raw)
+
+
+def velocity_override_from_goal_params(
+    goal_params_json: str | dict[str, object] | None,
+) -> NDArray[np.float32] | None:
+    """Parse an ``ExecuteRskill.goal_params_json`` velocity override.
+
+    Empty / missing ``goal_params_json`` returns ``None`` so the caller keeps
+    the YAML / ``policy_extras`` default. A present ``velocity_commands``
+    3-vector wins over that default without editing the rSkill YAML.
+
+    Args:
+        goal_params_json: Raw goal JSON string, already-decoded mapping, or
+            ``None``.
+
+    Returns:
+        Float32 ``[vx, vy, yaw_rate]`` or ``None`` when the payload omits
+        the key.
+
+    Raises:
+        ROSConfigError: JSON is malformed or the value is not a 3-vector.
+
+    Example:
+        >>> velocity_override_from_goal_params('{"velocity_commands": [1, 0, 0.2]}')
+        array([1. , 0. , 0.2], dtype=float32)
+        >>> velocity_override_from_goal_params("") is None
+        True
+    """
+    extra = _goal_params_mapping(goal_params_json)
+    if extra is None:
+        return None
+    raw = extra.get("velocity_commands", extra.get("velocity_command"))
+    if raw is None:
+        return None
+    return _as_velocity_command_vec(raw)
+
+
+def apply_velocity_command_override(
+    target: object,
+    goal_params_json: str | dict[str, object] | None,
+) -> NDArray[np.float32] | None:
+    """Push a per-goal joystick onto an adapter or rSkill shim.
+
+    Looks for ``set_velocity_commands`` on ``target`` and, if missing, on
+    ``target._adapter``. ``None`` (empty goal_params) restores the YAML
+    default on a resident skill so a later execute/verify call is not stuck
+    on the previous override.
+
+    Args:
+        target: ``_RslRlOnnxAdapter`` or the runner's ``_PolicyAdapterSkill``.
+        goal_params_json: ``ExecuteRskill.goal_params_json`` payload.
+
+    Returns:
+        The override vector, or ``None`` when the payload omitted the key
+        (default restored).
+
+    Example:
+        >>> class _Stub:
+        ...     def set_velocity_commands(self, commands):
+        ...         self.commands = commands
+        >>> stub = _Stub()
+        >>> apply_velocity_command_override(stub, {"velocity_commands": [0.8, 0, 0]})
+        array([0.8, 0. , 0. ], dtype=float32)
+        >>> stub.commands.tolist()
+        [0.8, 0.0, 0.0]
+    """
+    override = velocity_override_from_goal_params(goal_params_json)
+    setter = getattr(target, "set_velocity_commands", None)
+    if setter is None:
+        nested = getattr(target, "_adapter", None)
+        setter = getattr(nested, "set_velocity_commands", None)
+    if callable(setter):
+        setter(override)
+    return override
 
 
 def projected_gravity_from_quat_xyzw(quat_xyzw: NDArray[np.float32]) -> NDArray[np.float32]:
@@ -371,23 +451,41 @@ class _RslRlOnnxAdapter:
     _input_name: str
     _config: RslRlOnnxDeployConfig
     _velocity_commands: NDArray[np.float32]
+    _default_velocity_commands: NDArray[np.float32]
     _last_action: NDArray[np.float32] = field(init=False)
 
     def __post_init__(self) -> None:
         self._last_action = np.zeros(self._config.action_dim, dtype=np.float32)
+        self._default_velocity_commands = np.asarray(
+            self._default_velocity_commands, dtype=np.float32
+        ).reshape(3)
+        self._velocity_commands = np.asarray(self._velocity_commands, dtype=np.float32).reshape(3)
 
     def reset(self) -> None:
         self._last_action = np.zeros(self._config.action_dim, dtype=np.float32)
 
+    def set_velocity_commands(self, commands: object | None) -> None:
+        """Replace the joystick for subsequent ``step()`` calls.
+
+        ``None`` restores the YAML / extras default captured at load. Used by
+        ``execute_rskill`` so a resident skill can take a per-goal override
+        without rebuilding the ONNX session.
+        """
+        if commands is None:
+            self._velocity_commands = self._default_velocity_commands.copy()
+            return
+        self._velocity_commands = _as_velocity_command_vec(commands)
+
     def step(self, observation: Observation, instruction: str) -> NDArray[np.float32]:
         del instruction  # reasoner prompt ≠ Isaac velocity command (documented gap)
+        obs_cmd = _velocity_commands_from_obs(observation)
         obs_vec = build_rsl_rl_observation(
             config=self._config,
             joint_pos=_joint_pos_from_obs(observation, self._config),
             joint_vel=_joint_vel_from_obs(observation, self._config),
             base_ang_vel=_base_ang_vel_from_obs(observation),
             projected_gravity=_projected_gravity_from_obs(observation),
-            velocity_commands=self._velocity_commands,
+            velocity_commands=obs_cmd if obs_cmd is not None else self._velocity_commands,
             last_action=self._last_action,
         )
         batch = {self._input_name: obs_vec.reshape(1, -1)}
@@ -430,6 +528,7 @@ def _build_rsl_rl_onnx(env_cfg: Any) -> _RslRlOnnxAdapter:
         _input_name=input_name,
         _config=config,
         _velocity_commands=velocity,
+        _default_velocity_commands=velocity.copy(),
     )
 
 
@@ -757,6 +856,54 @@ def _quat_xyzw_to_rotation(q: NDArray[np.float32]) -> NDArray[np.float32]:
     )
 
 
+def _as_velocity_command_vec(raw: object) -> NDArray[np.float32]:
+    vec = _float_vec(raw, name="velocity_commands")
+    if vec.shape != (3,):
+        raise ROSConfigError(
+            f"rsl_rl_onnx: velocity_commands must be a 3-vector [vx, vy, yaw]; got {vec.shape}"
+        )
+    return vec
+
+
+def _goal_params_mapping(
+    goal_params_json: str | dict[str, object] | None,
+) -> dict[str, object] | None:
+    if goal_params_json is None:
+        return None
+    if isinstance(goal_params_json, dict):
+        return goal_params_json
+    text = str(goal_params_json).strip()
+    if not text:
+        return None
+    try:
+        import json
+
+        loaded = json.loads(text)
+    except ValueError as exc:
+        raise ROSConfigError(
+            f"rsl_rl_onnx: goal_params_json is not valid JSON: {text!r}"
+        ) from exc
+    if not isinstance(loaded, dict):
+        raise ROSConfigError(
+            f"rsl_rl_onnx: goal_params_json must be a JSON object, got {type(loaded)}"
+        )
+    return loaded
+
+
+def _velocity_commands_from_obs(observation: Observation) -> NDArray[np.float32] | None:
+    raw = observation.get("velocity_commands", observation.get("velocity_command"))
+    if raw is None:
+        return None
+    return _as_velocity_command_vec(raw)
+
+
+def _warn_obs_fallback(term: str, detail: str) -> None:
+    if term in _OBS_FALLBACK_WARNED:
+        return
+    _OBS_FALLBACK_WARNED.add(term)
+    log.warning("rsl_rl_onnx.obs_fallback", term=term, detail=detail)
+
+
 def _as_float_vec(raw: object, *, n: int, name: str) -> NDArray[np.float32] | None:
     if raw is None:
         return None
@@ -800,6 +947,12 @@ def _base_ang_vel_from_obs(observation: Observation) -> NDArray[np.float32]:
     twist = _as_float_vec(observation.get("base_twist"), n=6, name="base_twist")
     if twist is not None:
         return twist[3:6]
+    _warn_obs_fallback(
+        "base_ang_vel",
+        "observation has no base_ang_vel / base_twist; using zeros. "
+        "Go2MujocoHAL must publish base_pose_6dof + base_twist so WorldState "
+        "can fill the 45-D rsl-rl obs.",
+    )
     return np.zeros(3, dtype=np.float32)
 
 
@@ -816,4 +969,10 @@ def _projected_gravity_from_obs(observation: Observation) -> NDArray[np.float32]
     q = _as_float_vec(quat, n=4, name="base_pose.quat_xyzw")
     if q is not None:
         return projected_gravity_from_quat_xyzw(q)
+    _warn_obs_fallback(
+        "projected_gravity",
+        "observation has no projected_gravity / base_pose.quat_xyzw; using "
+        "identity gravity [0, 0, -1]. Go2MujocoHAL must publish base_pose_6dof "
+        "so WorldState can fill the 45-D rsl-rl obs.",
+    )
     return _GRAVITY_WORLD.copy()

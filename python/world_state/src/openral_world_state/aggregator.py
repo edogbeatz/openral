@@ -71,7 +71,45 @@ from openral_observability import producer as _producer
 from openral_observability import semconv
 from opentelemetry import trace
 
-__all__ = ["WorldStateAggregator"]
+__all__ = ["WorldStateAggregator", "pose_twist_from_odometry_fields"]
+
+
+def pose_twist_from_odometry_fields(
+    *,
+    xyz: tuple[float, float, float],
+    quat_xyzw: tuple[float, float, float, float],
+    twist: tuple[float, float, float, float, float, float],
+    frame_id: str,
+) -> tuple[Pose6D, tuple[float, float, float, float, float, float]]:
+    """Build the aggregator payload from an ``/odom`` sample.
+
+    Used by the WorldState ROS node so Go2 HAL ``base_pose_6dof`` +
+    ``base_twist`` (published as ``nav_msgs/Odometry``) reach
+    ``WorldState.base_pose`` / ``base_twist`` for the rsl-rl 45-D obs.
+
+    Example:
+        >>> pose, twist = pose_twist_from_odometry_fields(
+        ...     xyz=(0.0, 0.0, 0.4),
+        ...     quat_xyzw=(0.0, 0.0, 0.0, 1.0),
+        ...     twist=(0.1, 0.0, 0.0, 0.0, 0.0, 0.2),
+        ...     frame_id="odom",
+        ... )
+        >>> pose.xyz
+        (0.0, 0.0, 0.4)
+        >>> twist[5]
+        0.2
+    """
+    return (
+        Pose6D(xyz=xyz, quat_xyzw=quat_xyzw, frame_id=frame_id),
+        (
+            float(twist[0]),
+            float(twist[1]),
+            float(twist[2]),
+            float(twist[3]),
+            float(twist[4]),
+            float(twist[5]),
+        ),
+    )
 
 
 def _tracer() -> trace.Tracer:

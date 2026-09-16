@@ -30,7 +30,9 @@ PD position loop every ``mj_step`` — the same H1 / ``unitree_sdk2``
 pattern — so the public action contract stays "position targets in
 radians". Default qpos puts the calves at 0, which is **outside** the
 calf range ``[-2.7227, -0.83776]``; ``sim.keyframe_index: 0`` loads the
-menagerie ``home`` stand (thigh 0.9, calf -1.8).
+menagerie ``home`` stand for free-joint height, then
+:data:`GO2_HOME_JOINT_TARGETS` snaps actuated joints to Hub
+``default_joint_pos`` (hip ±0.1, thigh 0.9, calf -1.8).
 
 The Go2 *model* in menagerie is BSD-3-Clause (Unitree); the menagerie
 repo and the ``mujoco`` Python package are Apache-2.0. Compatible
@@ -49,6 +51,7 @@ Example:
 from __future__ import annotations
 
 from openral_core.exceptions import ROSConfigError
+from openral_core.geometry import quat_xyzw_to_yaw
 from openral_core.schemas import (
     AssetRefs,
     CameraSimPlacement,
@@ -70,7 +73,14 @@ from openral_core.schemas import (
 
 from openral_hal._mujoco_arm import MujocoArmHAL
 
-__all__ = ["GO2_DESCRIPTION", "GO2_HOME_JOINT_TARGETS", "Go2MujocoHAL"]
+__all__ = [
+    "GO2_DESCRIPTION",
+    "GO2_HOME_JOINT_TARGETS",
+    "GO2_HUB_DEFAULT_JOINT_POS",
+    "GO2_HUB_PD_DAMPING",
+    "GO2_HUB_PD_STIFFNESS",
+    "Go2MujocoHAL",
+]
 
 
 # ── Canonical joint order ─────────────────────────────────────────────────────
@@ -84,9 +94,28 @@ _GO2_JOINT_NAMES: tuple[str, ...] = tuple(
     f"{leg}_{part}_joint" for leg in _GO2_LEGS for part in _GO2_JOINT_PARTS
 )
 
-# Menagerie ``home`` keyframe actuated qpos (not the free-joint prefix).
+# Hub ``params/deploy.yaml`` ``default_joint_pos`` (diasAiMaster/unitree-go2-velocity-flat).
+# Menagerie FL/FR/RL/RR x hip/thigh/calf order. Hip +/-0.1 (not menagerie home 0.0).
 # Calf range excludes 0 — tests must command around this stand, not zeros.
-GO2_HOME_JOINT_TARGETS: tuple[float, ...] = (0.0, 0.9, -1.8) * 4
+GO2_HUB_DEFAULT_JOINT_POS: tuple[float, ...] = (
+    -0.1,
+    0.9,
+    -1.8,
+    0.1,
+    0.9,
+    -1.8,
+    -0.1,
+    0.9,
+    -1.8,
+    0.1,
+    0.9,
+    -1.8,
+)
+# Spawn / ACM-rest / ``reset_to_pose`` target. Aligned with Hub default_joint_pos
+# so rsl-rl ``joint_pos_rel`` is zero at stand. Menagerie keyframe 0 still loads
+# first (free-joint height); ``Go2MujocoHAL.connect`` then snaps actuated qpos
+# here. Empty in-tree ACM (`robots/go2`) should use this rest when lowering lands.
+GO2_HOME_JOINT_TARGETS: tuple[float, ...] = GO2_HUB_DEFAULT_JOINT_POS
 
 
 # ── Joint limits ─────────────────────────────────────────────────────────────
@@ -260,15 +289,23 @@ GO2_DESCRIPTION = RobotDescription(
 
 
 # ── PD gains for the position loop ───────────────────────────────────────────
-# Same sizing rule as H1: 1 rad of error saturates near ``ctrlrange``,
-# kv = 0.05 * kp. Contract-validation gains with gravity off — not a
-# locomotion controller.
+# Hub ``params/deploy.yaml`` ships stiffness [20, 20, 40] and damping [1, 1, 2]
+# per hip/thigh/calf. That Isaac PD is **not** applied here.
+#
+# Intentional delta (do not silently match Hub):
+#   HAL kp is sized so 1 rad of error saturates near ``ctrlrange``
+#   (hip/thigh 23.7 N·m, calf 45.43 N·m); kv = 0.05 * kp.
+# Softening to Hub 20/40 would under-hold estop / home-acm with gravity off
+# and change the closed-loop pipe tests. Documented, not a silent mismatch.
 _GO2_KP_BY_PART: dict[str, float] = {
     "hip": 23.7,
     "thigh": 23.7,
     "calf": 45.43,
 }
 _GO2_KV_BY_PART: dict[str, float] = {part: 0.05 * kp for part, kp in _GO2_KP_BY_PART.items()}
+# Hub deploy.yaml PD, recorded for docs / residual-gap notes. Unused by the HAL.
+GO2_HUB_PD_STIFFNESS: tuple[float, ...] = (20.0, 20.0, 40.0) * 4
+GO2_HUB_PD_DAMPING: tuple[float, ...] = (1.0, 1.0, 2.0) * 4
 
 
 def _go2_pd_gains() -> dict[str, tuple[float, float]]:
@@ -336,6 +373,79 @@ class Go2MujocoHAL(MujocoArmHAL):
             staleness_limit_s=staleness_limit_s,
         )
         self._pd_gains: dict[str, tuple[float, float]] = _go2_pd_gains()
+
+    def connect(self) -> None:
+        """Load the MJCF, then snap actuated joints to Hub ``default_joint_pos``.
+
+        Menagerie keyframe 0 still supplies the free-joint height / orientation.
+        Hips are then written to Hub ±0.1 so spawn matches the rsl-rl rest used
+        by ``params/deploy.yaml`` (menagerie home hips are 0.0).
+        """
+        super().connect()
+        self._snap_actuated_home()
+
+    def _snap_actuated_home(self) -> None:
+        """Write :data:`GO2_HOME_JOINT_TARGETS` into actuated qpos + ctrl."""
+        assert self._model is not None
+        assert self._data is not None
+        for name, target in zip(self._joint_names, GO2_HOME_JOINT_TARGETS, strict=True):
+            qpos_addr = self._joint_qpos_addr.get(name)
+            if qpos_addr is not None:
+                self._data.qpos[qpos_addr] = float(target)
+            act_idx = self._actuator_index.get(name)
+            if act_idx is not None:
+                self._data.ctrl[act_idx] = float(target)
+        import mujoco as mj  # noqa: PLC0415  # reason: optional sim-only dep
+
+        mj.mj_forward(self._model, self._data)
+
+    @property
+    def base_pose(self) -> tuple[float, float, float]:
+        """Planar ``(x, y, yaw)`` from the floating-base free joint."""
+        xyz, quat_xyzw = self._require_base_pose_6dof()
+        qx, qy, qz, qw = quat_xyzw
+        return (xyz[0], xyz[1], quat_xyzw_to_yaw(qx, qy, qz, qw))
+
+    def base_pose_6dof(
+        self,
+    ) -> tuple[tuple[float, float, float], tuple[float, float, float, float]]:
+        """World ``(xyz, quat_xyzw)`` of the Go2 ``base`` body (Isaac / rsl-rl).
+
+        Source: MuJoCo free-joint ``qpos[0:7]`` (xyz + wxyz). Needed so the
+        rsl-rl adapter can build ``projected_gravity = R^T [0,0,-1]`` instead
+        of falling back to identity gravity.
+        """
+        return self._require_base_pose_6dof()
+
+    @property
+    def base_twist(self) -> tuple[float, float, float, float, float, float]:
+        """Base twist ``(vx, vy, vz, wx, wy, wz)``.
+
+        Linear velocity is the free-joint ``qvel[0:3]`` (parent / world).
+        Angular velocity is ``qvel[3:6]`` in the child (base) frame — the
+        Isaac Lab ``base_ang_vel`` term.
+        """
+        self._require_connected("base_twist")
+        assert self._data is not None
+        qvel = self._data.qvel
+        return (
+            float(qvel[0]),
+            float(qvel[1]),
+            float(qvel[2]),
+            float(qvel[3]),
+            float(qvel[4]),
+            float(qvel[5]),
+        )
+
+    def _require_base_pose_6dof(
+        self,
+    ) -> tuple[tuple[float, float, float], tuple[float, float, float, float]]:
+        self._require_connected("base_pose_6dof")
+        assert self._data is not None
+        qpos = self._data.qpos
+        xyz = (float(qpos[0]), float(qpos[1]), float(qpos[2]))
+        qw, qx, qy, qz = (float(qpos[3]), float(qpos[4]), float(qpos[5]), float(qpos[6]))
+        return xyz, (qx, qy, qz, qw)
 
     def _per_step_update(self, targets: list[float]) -> None:
         """Run a software PD position loop every ``mj_step``.

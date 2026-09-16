@@ -788,7 +788,7 @@ if _ROS2_AVAILABLE:
                     # normal path's retraction is not doubled.
                     self._retract_place_declaration()
 
-        def _execute_locked(self, goal_handle: ServerGoalHandle) -> Any:  # noqa: PLR0911, PLR0915  # reason: sequential goal-lifecycle handler — acquire → starting-pose → run, each with a typed failure branch that sets failure_reason + finalizes the goal; splitting the linear flow hurts readability
+        def _execute_locked(self, goal_handle: ServerGoalHandle) -> Any:  # noqa: PLR0911, PLR0912, PLR0915  # reason: sequential goal-lifecycle handler — acquire → starting-pose → run, each with a typed failure branch that sets failure_reason + finalizes the goal; splitting the linear flow hurts readability
             """Run a single ExecuteRskill goal end-to-end (synchronously)."""
             from openral_core.exceptions import (
                 ROSCapabilityMismatch,
@@ -833,6 +833,7 @@ if _ROS2_AVAILABLE:
                 try:
                     # Single GPU-resident skill: evict-on-switch,
                     # reuse-on-match, else resolve + cache (see _acquire_skill).
+                    goal_params_json = getattr(req, "goal_params_json", "")
                     skill = self._acquire_skill(
                         rskill_id=rskill_id,
                         revision=revision,
@@ -841,8 +842,13 @@ if _ROS2_AVAILABLE:
                         # Empty string when the goal carries no
                         # structured params (today's default; PR3 wires
                         # the LLM to populate it).
-                        goal_params_json=getattr(req, "goal_params_json", ""),
+                        goal_params_json=goal_params_json,
                     )
+                    # rsl_rl_onnx: per-goal [vx, vy, yaw] override. Empty
+                    # payload restores the YAML default on a resident skill.
+                    apply_override = getattr(skill, "apply_goal_params_json", None)
+                    if callable(apply_override):
+                        apply_override(goal_params_json)
                 except (ROSConfigError, ROSCapabilityMismatch) as exc:
                     span.record_exception(exc)
                     self.get_logger().error(
@@ -2370,9 +2376,10 @@ def _attach_locomotion_proprio(obs: dict[str, Any], world_state: Any) -> None:
     """Copy HAL / WorldState proprio extras VLAs ignore and rsl-rl ONNX reads.
 
     Existing adapters only look up ``obs["state"]`` / ``obs["images"]``. Adding
-    ``joint_vel``, ``base_twist``, and ``base_pose`` is backward-compatible.
-    The Go2 MuJoCo HAL may leave pose/twist unset — the rsl-rl adapter then
-    falls back to zero angular velocity and identity projected gravity.
+    ``joint_vel``, ``base_twist``, ``base_ang_vel``, and ``base_pose`` is
+    backward-compatible. When WorldState has no pose/twist the rsl-rl adapter
+    logs a one-shot warning and falls back to zero angular velocity + identity
+    projected gravity.
     """
     js = getattr(world_state, "joint_state", None)
     position = getattr(js, "position", None) if js is not None else None
@@ -2386,6 +2393,8 @@ def _attach_locomotion_proprio(obs: dict[str, Any], world_state: Any) -> None:
     twist = getattr(world_state, "base_twist", None)
     if twist is not None:
         obs["base_twist"] = tuple(float(v) for v in twist)
+        if len(obs["base_twist"]) >= 6:
+            obs["base_ang_vel"] = obs["base_twist"][3:6]
     pose = getattr(world_state, "base_pose", None)
     if pose is not None:
         xyz = getattr(pose, "xyz", None)
@@ -3071,6 +3080,7 @@ def _make_policy_adapter_skill(
             )
             self._adapter = adapter
             self._prompt = prompt
+            self._velocity_commands_override: list[float] | None = None
             # Hold the full manifest so the F1 skill_runner can read
             # fields the rSkillBase ABC doesn't expose (e.g.
             # ``starting_pose`` for the HAL ResetToPose call before
@@ -3101,6 +3111,20 @@ def _make_policy_adapter_skill(
                     if tok.isdigit():
                         self._dump_ticks.add(int(tok))
             self._dump_path = os.environ.get("OPENRAL_DUMP_OBS_PATH", "/tmp/openral_obs_dump")
+
+        def apply_goal_params_json(self, goal_params_json: str) -> None:
+            """Apply a per-``execute_rskill`` ``goal_params_json`` override.
+
+            ``rsl_rl_onnx`` reads ``velocity_commands`` here so a resident
+            skill can change ``[vx, vy, yaw]`` without editing YAML. Empty
+            payload restores the load-time default.
+            """
+            from openral_sim.policies.rsl_rl_onnx import apply_velocity_command_override
+
+            override = apply_velocity_command_override(self._adapter, goal_params_json)
+            self._velocity_commands_override = (
+                None if override is None else [float(v) for v in override.tolist()]
+            )
 
         def _configure_impl(self) -> None:
             """No-op — `make_policy` already built the adapter."""
@@ -3299,6 +3323,8 @@ def _make_policy_adapter_skill(
             # `_sensor_name_to_vla_slot` / `_decode_image_frames`).
             _assemble_obs_images(obs, world_state.image_frames, sensor_to_slot)
             _attach_locomotion_proprio(obs, world_state)
+            if self._velocity_commands_override is not None:
+                obs["velocity_commands"] = list(self._velocity_commands_override)
 
             action_array = self._adapter.step(obs, self._prompt)  # type: ignore[attr-defined]
             # Reorder policy-order action → robot-order action so the

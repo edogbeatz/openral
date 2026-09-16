@@ -25,7 +25,12 @@ from openral_core.schemas import (
     SensorSpec,
     WorldState,
 )
-from openral_world_state import DEFAULT_RATE_HZ, DEFAULT_STALENESS_S, WorldStateAggregator
+from openral_world_state import (
+    DEFAULT_RATE_HZ,
+    DEFAULT_STALENESS_S,
+    WorldStateAggregator,
+    pose_twist_from_odometry_fields,
+)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -421,6 +426,26 @@ class TestBasePoseAndBattery:
         twist = (1.0, 0.0, 0.0, 0.0, 0.0, 0.5)
         agg.update_base_pose(_pose(), twist=twist)
         ws = agg.snapshot()
+        assert ws.base_twist == pytest.approx(twist)
+
+    def test_pose_twist_from_odometry_fields_feeds_snapshot(self) -> None:
+        """HAL /odom fields become WorldState.base_pose + base_twist (1-197)."""
+        pose, twist = pose_twist_from_odometry_fields(
+            xyz=(0.0, 0.0, 0.4),
+            quat_xyzw=(0.0, 0.0, 0.0, 1.0),
+            twist=(0.1, 0.0, 0.0, 0.0, 0.0, 0.2),
+            frame_id="odom",
+        )
+        assert pose.xyz == (0.0, 0.0, 0.4)
+        assert pose.quat_xyzw == (0.0, 0.0, 0.0, 1.0)
+        assert pose.frame_id == "odom"
+        assert twist[0] == pytest.approx(0.1)
+        assert twist[5] == pytest.approx(0.2)
+        agg = _make_agg()
+        agg.update_base_pose(pose, twist=twist)
+        ws = agg.snapshot()
+        assert ws.base_pose is not None
+        assert ws.base_pose.xyz == (0.0, 0.0, 0.4)
         assert ws.base_twist == pytest.approx(twist)
 
     def test_battery_stored(self) -> None:
