@@ -8,18 +8,19 @@ name: test-ros2
 # had no CI coverage of any kind: a kernel-only PR gets a green
 # `select-and-test` that ran zero tests. This file is that missing half.
 #
-# Auto-triggers disabled: out of GitHub Actions credits, matching hal.yml,
-# test-python.yml and docs.yml. Re-enable PR/push triggers once billing is
-# restored — see "Re-enabling on PRs" below. Until then this is the documented,
-# reproducible way to run the kernel suite in CI on demand, and the local
-# equivalent is `just ros2-build && just ros2-test`.
+# Runs on PRs to master (and on workflow_dispatch). The GitHub Actions check
+# name is the job name below — `colcon build + ctest — Jazzy` — and that exact
+# string must be in the `protect_default_branch` ruleset's
+# `required_status_checks`, or a kernel-only PR still merges on a green
+# `select-and-test` that ran zero Python tests. Local equivalent:
+# `just ros2-build && just ros2-test`.
 #
 # Cost, measured rather than guessed. On a 16-core dev host, a cold
 # `--packages-up-to openral_safety_kernel openral_octomap_bridge` is 4 packages
 # in 2 min 21 s: openral_msgs 29 s, openral_octomap_bridge 29 s,
 # opentelemetry_cpp_vendor 1 min 2 s, openral_safety_kernel 1 min 19 s. Expect
 # meaningfully longer on a 4-core hosted runner, but this is minutes, not tens
-# of minutes — cheaper than assumed when the credits freeze was applied.
+# of minutes.
 #
 # `opentelemetry_cpp_vendor` git-clones and builds upstream otel-cpp from source
 # via ExternalProject_Add (there is no `ros-jazzy-opentelemetry-cpp-vendor`
@@ -30,13 +31,9 @@ name: test-ros2
 # these two are the ones the Python selector cannot cover. Widen via the
 # `packages` input when a run needs more.
 #
-# Re-enabling on PRs — replace the `on:` block with:
-#     on:
-#       workflow_dispatch:
-#       pull_request:
-#         branches: [master]
-# and add `test-ros2` to the `required_status_checks` of the
-# protect_default_branch ruleset, or a kernel PR still merges unverified.
+# Hosted `ubuntu-24.04` + `ros:jazzy-ros-base` — not a self-hosted runner.
+# Adding this file to the fork-reachable PR set does not reopen the
+# self-hosted-runner attack in docs/contributing/development.md.
 on:
   workflow_dispatch:
     inputs:
@@ -44,6 +41,8 @@ on:
         description: "colcon --packages-up-to targets (space-separated)"
         required: false
         default: "openral_safety_kernel openral_octomap_bridge"
+  pull_request:
+    branches: [master]
 
 permissions:
   contents: read
@@ -87,9 +86,12 @@ jobs:
           cache-dependency-glob: uv.lock
 
       # The colcon build points -DPython3_EXECUTABLE at this venv, so it has to
-      # exist before the build, not just before the tests.
+      # exist before the build, not just before the tests. A stale lock must
+      # fail the job — never fall back to a silent re-resolve.
+      - name: Check lockfile
+        run: uv lock --check
       - name: Sync the Python environment
-        run: uv sync --frozen --all-packages || uv sync --all-packages
+        run: uv sync --frozen --all-packages
 
       - name: Declared-dependency check
         run: bash scripts/check_ros_build_deps.sh

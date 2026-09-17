@@ -32,7 +32,7 @@ update this README in the same change.
 | Workflow | Triggers | Suites it runs | Notes |
 | --- | --- | --- | --- |
 | `test-python.yml` | PR, push to `master` | `tests/unit/` + `tests/integration/` (no marker filter) | Matrix: `ubuntu-22.04`, `ubuntu-24.04`, `macos-14` × Python 3.12. Coverage uploaded to Codecov from the `ubuntu-24.04` cell. |
-| `test-ros2.yml` | PR, push to `master` | `colcon test` (not pytest) | Builds 6 ROS 2 packages on `ros:humble` and `ros:jazzy`, then runs colcon tests. |
+| `test-ros2.yml` | PR to `master`, `workflow_dispatch` | `colcon test` + `colcon test-result --verbose` | Builds `openral_safety_kernel` + `openral_octomap_bridge` (and their deps) on `ubuntu-24.04` / `ros:jazzy-ros-base`. Required check name: `colcon build + ctest — Jazzy`. |
 | `hal.yml` | PR, push to `master` | `tests/unit/test_hal.py`; then `tests/integration/` inside `ros:jazzy-ros-base` with **`-k "not test_lifecycle_node_launch"`** (see §4 below). |
 | `sim-mujoco.yml` | PR, push to `master` | `tests/sim/ -m "not slow"` | CPU runner; the GPU-only suite collects 0 tests (exit 5) which is forced to success. Also smoke-tests the SmolVLA SO-100 example with `--no-run`. |
 | `lint.yml` | PR, push to `master` | (lint only) | Includes **`schema_export.py --check`** as the schema-drift guard. |

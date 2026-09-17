@@ -233,9 +233,9 @@ not a safe option for this repository. **A runner label is a routing request
 made by a workflow, not an access control enforced by the runner.** A repository-scoped
 self-hosted runner accepts jobs from *any* workflow in that repository naming
 its labels, and for a `pull_request` event GitHub executes the workflow
-definition from the **fork's** ref. `OpenRAL/openral` is public and has three
+definition from the **fork's** ref. `OpenRAL/openral` is public and has four
 fork-reachable `pull_request` workflows (`dco.yml`, `quality.yml`,
-`test-selective.yml`), so a fork PR can edit one to
+`test-selective.yml`, `test-ros2.yml`), so a fork PR can edit one to
 `runs-on: [self-hosted, <label>]` with arbitrary `run:` steps and execute code
 on the runner host — with that user's SSH keys, `gh` credentials and LAN access
 to the lab robots. Restricting a runner to selected workflows requires an
