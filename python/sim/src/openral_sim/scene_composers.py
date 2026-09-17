@@ -197,7 +197,7 @@ def _namespace_default_classes(arm_root: ET.Element, prefix: str) -> None:
     for element in arm_root.iter():
         for attr in ("class", "childclass"):
             value = element.get(attr)
-            if value in declared:
+            if value is not None and value in declared:
                 element.set(attr, prefix + value)
 
 

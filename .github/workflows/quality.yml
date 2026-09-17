@@ -1,5 +1,7 @@
 name: quality
-# Quality gate on every PR: ruff + mypy --strict + schema drift + docs build.
+# Quality gate on every PR: lockfile check + ruff + mypy --strict + schema drift
+# + docs build. `uv lock --check` then `uv sync --frozen` — a stale lock fails
+# the job; never fall back to a silent re-resolve.
 # Fast (<3 min) and high signal. The `mkdocs build --strict` step runs here
 # (rather than as a separate docs-on-PR trigger) so it reuses this job's already
 # -synced --all-packages env — catching the `--strict` doc breakage that pages.yml
@@ -21,11 +23,12 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
-      - run: uv sync --frozen --all-packages || uv sync --all-packages
+      - name: Check lockfile
+        run: uv lock --check
+      - run: uv sync --frozen --all-packages
       - run: uv run ruff check .
       - run: uv run ruff format --check .
-      - run: uv run mypy --strict -p openral_core -p openral_cli -p openral_hal
-      - run: uv run mypy --strict tools/
+      - run: bash tools/run_mypy.sh
       - name: Check schema drift
         run: uv run python tools/schema_export.py --check
       - name: Check rSkill SKILL.md drift

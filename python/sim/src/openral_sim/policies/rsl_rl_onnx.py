@@ -752,7 +752,7 @@ def _download_hub_assets(
 ) -> tuple[Path, Path]:
     try:
         from huggingface_hub import hf_hub_download
-        from huggingface_hub.utils import EntryNotFoundError
+        from huggingface_hub.errors import EntryNotFoundError
     except ImportError as exc:
         raise ROSConfigError(
             "rsl_rl_onnx: huggingface_hub is required to fetch policy.onnx"
@@ -960,7 +960,7 @@ def _as_float_vec(raw: object, *, n: int, name: str) -> NDArray[np.float32] | No
     if raw is None:
         return None
     if hasattr(raw, "tolist") and not isinstance(raw, (list, tuple)):
-        raw = raw.tolist()  # type: ignore[union-attr]  # reason: numpy / pydantic vector
+        raw = raw.tolist()
     if isinstance(raw, dict):
         return None
     try:

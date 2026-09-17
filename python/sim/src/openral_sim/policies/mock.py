@@ -99,6 +99,17 @@ def _coerce_int(value: object, default: int) -> int:
     raise TypeError(f"cannot coerce {value!r} to int")
 
 
+def _coerce_float(value: object, default: float) -> float:
+    """Best-effort float coercion for values pulled from a dict[str, object]."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float, str)):
+        return float(value)
+    raise TypeError(f"cannot coerce {value!r} to float")
+
+
 @SCENES.register("mock")
 def _build_mock_scene(env_cfg: SimEnvironment) -> _MockSim:
     """Build the mock scene from the SimEnvironment.
@@ -260,16 +271,27 @@ _SCENE_DEFAULT_ACTION_DIM: dict[str, int] = {
 }
 
 
-def _resolve_hold(env_cfg: SimEnvironment, action_dim: int) -> tuple[NDArray[np.float32] | None, str, float, float, float]:
+def _resolve_hold(
+    env_cfg: SimEnvironment, action_dim: int
+) -> tuple[NDArray[np.float32] | None, str, float, float, float]:
     extra = env_cfg.vla.extra or {}
     file_cfg = _load_controller_json(env_cfg.vla)
     hold = _float_list(extra.get("hold_targets"), n=action_dim)
     if hold is None:
         hold = _float_list(file_cfg.get("hold_targets"), n=action_dim)
     gait = str(extra.get("gait") or file_cfg.get("gait") or "hold")
-    gait_amp = float(extra.get("gait_amp") if extra.get("gait_amp") is not None else file_cfg.get("gait_amp") or 0.0)
-    gait_hz = float(extra.get("gait_hz") if extra.get("gait_hz") is not None else file_cfg.get("gait_hz") or 1.5)
-    dt = float(extra.get("dt") if extra.get("dt") is not None else file_cfg.get("dt") or (1.0 / 30.0))
+    gait_amp = _coerce_float(
+        extra.get("gait_amp") if extra.get("gait_amp") is not None else file_cfg.get("gait_amp"),
+        0.0,
+    )
+    gait_hz = _coerce_float(
+        extra.get("gait_hz") if extra.get("gait_hz") is not None else file_cfg.get("gait_hz"),
+        1.5,
+    )
+    dt = _coerce_float(
+        extra.get("dt") if extra.get("dt") is not None else file_cfg.get("dt"),
+        1.0 / 30.0,
+    )
     targets = np.asarray(hold, dtype=np.float32) if hold is not None else None
     return targets, gait, gait_amp, gait_hz, dt
 
