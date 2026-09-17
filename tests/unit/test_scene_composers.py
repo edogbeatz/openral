@@ -147,6 +147,55 @@ def test_mounted_arm_appends_arm_joints_after_the_carrier_s() -> None:
         scene.unlink(missing_ok=True)
 
 
+def test_mounted_arm_mass_scale_shrinks_arm_inertial_only() -> None:
+    """arm_mass_scale must change Z1 payload mass, not the Go2 carrier."""
+    mujoco = pytest.importorskip("mujoco")
+    pytest.importorskip("robot_descriptions")
+    from openral_core.exceptions import ROSConfigError
+
+    with pytest.raises(ROSConfigError, match="arm_mass_scale"):
+        compose_mounted_arm_mjcf(
+            base_mjcf_ref=_GO2_MJCF,
+            arm_mjcf_ref=_Z1_MJCF,
+            arm_mjcf_file="z1_gripper.xml",
+            mount_body="base",
+            mount_pos=(0.18, 0.0, 0.06),
+            arm_mass_scale=0.0,
+        )
+
+    def _arm_and_base_mass(scale: float) -> tuple[float, float]:
+        xml, meshdir = compose_mounted_arm_mjcf(
+            base_mjcf_ref=_GO2_MJCF,
+            arm_mjcf_ref=_Z1_MJCF,
+            arm_mjcf_file="z1_gripper.xml",
+            mount_body="base",
+            mount_pos=(0.18, 0.0, 0.06),
+            arm_mass_scale=scale,
+        )
+        scene = meshdir.parent / f"go2_z1_mass_scale_{scale}.xml"
+        scene.write_text(xml)
+        try:
+            model = mujoco.MjModel.from_xml_path(str(scene))
+            arm = 0.0
+            base = 0.0
+            for i in range(model.nbody):
+                name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, i) or ""
+                mass = float(model.body_mass[i])
+                if name.startswith("link") or "gripper" in name.lower():
+                    arm += mass
+                elif name == "base":
+                    base = mass
+            return arm, base
+        finally:
+            scene.unlink(missing_ok=True)
+
+    arm_full, base_full = _arm_and_base_mass(1.0)
+    arm_light, base_light = _arm_and_base_mass(0.01)
+    assert arm_full > 1.0
+    assert arm_light == pytest.approx(arm_full * 0.01, rel=1e-6)
+    assert base_light == pytest.approx(base_full, rel=1e-9)
+
+
 def test_mounted_arm_composite_stands_under_gravity() -> None:
     """The carrier must still hold a stand with the arm's mass on its back."""
     mujoco = pytest.importorskip("mujoco")

@@ -28,11 +28,10 @@ from typing import TYPE_CHECKING, Any
 from openral_hal.convex_distance import ConvexDistance, convex_geom_distance
 from openral_hal.mobile_base_bridge import describes_floating_base, describes_mobile_base
 
-# Throttle dashboard thumbnail emission to ~1 Hz per camera (1e9 ns).
-# The live ROS topic stays at the higher camera_rate_hz; only the OTel
-# ``sensors.read_latest`` span is rate-limited to avoid ballooning OTLP
-# payload with redundant thumbnails (the dashboard polls at ~1 Hz anyway).
-_THUMB_INTERVAL_NS = 1_000_000_000
+# Dashboard MJPEG re-serves these spans as live video. Cap at 25 Hz to match
+# DeployRunner's private cadence; the ROS Image topic stays at camera_rate_hz.
+# 1 Hz was leftover from when the Perception card polled a still JPEG.
+_THUMB_INTERVAL_NS = 40_000_000
 _IMAGE_DIM = 3  # HWC ndarray
 _RGB_CHANNELS = 3
 # Cap on the pre-attach occupancy snapshot (#272). A partial set would answer
@@ -222,6 +221,28 @@ def _frame_for_camera(images: dict[str, Any], obs_key: str, name: str) -> Any:
     if arr is None and name != obs_key:
         arr = images.get(name)
     return arr
+
+
+def _rgb_image_frame_id(sensor: Any) -> str:
+    """TF frame stamped on a published RGB ``Image`` and its ``CameraInfo``.
+
+    Foxglove's Image panel refuses a CameraInfo whose ``header.frame_id``
+    differs from the Image's. The contract is TF: use the manifest
+    ``SensorSpec.frame_id`` (Go2 ``front_camera``), never the sensor name
+    (``front``) and never a third invented frame. Falls back to the sensor
+    name only when ``frame_id`` is empty.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> desc = RobotDescription.from_yaml("robots/go2/robot.yaml")
+        >>> front = next(s for s in desc.sensors if s.name == "front")
+        >>> _rgb_image_frame_id(front)
+        'front_camera'
+    """
+    frame = str(getattr(sensor, "frame_id", "") or "").strip()
+    if frame:
+        return frame
+    return str(sensor.name)
 
 
 def _optical_frame_rgb_cameras(sensors: Any) -> list[Any]:
@@ -2592,7 +2613,7 @@ class SimSensorBridge:
         self._camera_info_specs: dict[str, Any] = {}
         self._image_obs_key: dict[str, str] = {}
         # Per-camera last thumbnail emit timestamp (ns). Throttles the OTel
-        # ``sensors.read_latest`` span to ~1 Hz while the ROS topic publishes
+        # ``sensors.read_latest`` span to 25 Hz while the ROS topic publishes
         # at the full camera_rate_hz.
         self._last_thumb_ns: dict[str, int] = {}
         self._image_missing_warned: set[str] = set()
@@ -2892,8 +2913,8 @@ class SimSensorBridge:
         data is copied bytewise — no compression hop.
 
         An OTel ``sensors.read_latest`` span (with JPEG thumbnail) is emitted
-        at most once per second per camera so the dashboard Perception card
-        updates without ballooning the OTLP payload.
+        at most at 25 Hz per camera so the dashboard MJPEG tiles track the
+        live ROS topic without a 1 Hz still-image cap.
         """
         reader = getattr(self._hal, "read_images", None)
         if reader is None or not self._image_obs_key:
@@ -2936,7 +2957,8 @@ class SimSensorBridge:
             h, w, c = arr.shape
             msg = RosImage()
             msg.header.stamp = stamp
-            msg.header.frame_id = name
+            spec = self._camera_info_specs.get(name)
+            msg.header.frame_id = _rgb_image_frame_id(spec) if spec is not None else name
             msg.height = int(h)
             msg.width = int(w)
             msg.encoding = "mono8" if c == 1 else "rgb8" if c == _RGB_CHANNELS else "rgba8"
@@ -2949,9 +2971,8 @@ class SimSensorBridge:
                 info = self._rgb_camera_info(name, int(w), int(h), stamp)
                 if info is not None:
                     info_pub.publish(info)
-            # Emit a ``sensors.read_latest`` span at most once per second per
-            # camera (dashboard polls at ~1 Hz; higher rate would balloon OTLP
-            # payload with redundant thumbnails).
+            # Emit a ``sensors.read_latest`` span at most at 25 Hz per camera
+            # (dashboard MJPEG; a 1 Hz still was leftover from card polling).
             last = self._last_thumb_ns.get(name, 0)
             if now_ns - last < _THUMB_INTERVAL_NS:
                 continue
@@ -3011,7 +3032,7 @@ class SimSensorBridge:
             fy=fy,
             cx=width / 2.0,
             cy=height / 2.0,
-            frame_id=spec.frame_id,
+            frame_id=_rgb_image_frame_id(spec),
             stamp=stamp,
         )
 

@@ -18,6 +18,10 @@ model_family: "rsl_rl_onnx"
 # ── Compatibility contract ─────────────────────────────────────────────────
 embodiment_tags:
   - "go2"
+  # Same 12-D ONNX on the 19-DoF composite: runner hold-pads 12→19 and the
+  # HAL qpos-snaps the sticky Recalibrate / arm-ready hold. Tag is the
+  # capability-gate half of that adapt.
+  - "go2_z1"
 
 # Proprio-only. The policy does not consume cameras. IMU / base pose come
 # from Go2MujocoHAL base_pose_6dof + base_twist via /odom → WorldState.

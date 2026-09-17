@@ -122,6 +122,23 @@ def test_camera_panels_track_the_requested_slots(compressed: bool) -> None:
     for i, name in enumerate(cameras):
         panel = layout["configById"][f"Image!cam_{i}"]
         assert panel["imageMode"]["imageTopic"] == f"/openral/cameras/{name}/image{suffix}"
+        assert panel["imageMode"]["calibrationTopic"] == f"/openral/cameras/{name}/camera_info"
+
+
+def test_overview_camera_leads_the_image_stack() -> None:
+    """``top`` is the third-person slot — it must be the first Image panel.
+
+    An egocentric ``front`` camera cannot see the robot (the body is behind
+    the lens). Operators opening the generated Go2 layout were staring at
+    empty floor while the 3D panel showed the quadruped.
+    """
+    layout = build_layout(["front", "top"])
+    assert layout["configById"]["Image!cam_0"]["imageMode"]["imageTopic"] == (
+        "/openral/cameras/top/image"
+    )
+    assert layout["configById"]["Image!cam_1"]["imageMode"]["imageTopic"] == (
+        "/openral/cameras/front/image"
+    )
 
 
 def test_empty_camera_list_is_rejected() -> None:
@@ -154,6 +171,13 @@ def test_generated_layout_has_no_write_capable_panel(panel_type: str) -> None:
         assert not panel_id.startswith(f"{panel_type}!"), (
             f"{panel_id} is a write-capable panel; the surface is read-only"
         )
+
+
+def test_hero_scene_matches_rviz_collada_up() -> None:
+    """Go2 DAE meshes are Y-up in the file and Z-up in ROS; ignore the tag."""
+    scene = build_layout(["front"], follow_frame="base")["configById"]["3D!scene"]["scene"]
+    assert scene["ignoreColladaUpAxis"] is True
+    assert scene["meshUpAxis"] == "z_up"
 
 
 def test_three_d_panels_have_no_publish_target() -> None:

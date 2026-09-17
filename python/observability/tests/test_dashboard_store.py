@@ -180,6 +180,12 @@ def test_ingest_rskill_execute_populates_headline_card(
 
     snap = store.snapshot()
     assert snap["service_name"] == "ral"
+    # Header "live/stale/dead" ages against `now_unix - last_ingest_ts` so a
+    # browser whose clock is a minute off the dashboard host does not stick
+    # on DEAD (1m) while ingest is still landing.
+    assert snap["last_ingest_ts"] > 0
+    assert snap["now_unix"] >= snap["last_ingest_ts"]
+    assert snap["now_unix"] - snap["last_ingest_ts"] < 1.0
     card = snap["cards"]["rskill_execute"]
     assert card["name"] == "rskill.execute"
     assert card["attrs"]["rskill.id"] == "smolvla-libero"
@@ -558,3 +564,90 @@ def test_ingest_logs_shares_the_bounded_event_ring(
         )
     )
     assert len(store.snapshot()["events"]) == 200  # _EVENT_RING_SIZE
+
+
+# ── Card-visibility contract (REVEAL_ON_FEED in dashboard.js) ────────────────
+#
+# The page hides every optional card until its producer speaks once, keyed on
+# these exact snapshot paths. Renaming a bucket or dropping its `ts_unix` would
+# leave the matching card invisible for a whole run with no error anywhere —
+# so the keys are pinned here, the same way the perception-overlay and
+# safety-status cards pin the keys their renderers read.
+_REVEAL_KEYS = (
+    "perception",
+    "reasoner",
+    "slam",
+    "pointcloud",
+    "robot_state",
+    "system",
+    "world_state",
+    "scene_objects",
+)
+
+
+def test_reveal_buckets_exist_and_start_unfed() -> None:
+    """Every optional card's bucket is present but empty before its first span."""
+    topics = TelemetryStore().snapshot()["topics"]
+    for key in _REVEAL_KEYS:
+        assert key in topics, f"{key} bucket missing — its card would never reveal"
+        assert not topics[key].get("ts_unix"), f"{key} claims a timestamp before any ingest"
+    cameras = topics["perception"]["cameras"]
+    assert set(cameras) >= {"front", "top"}
+    assert cameras["front"]["role"] == "main"
+    assert cameras["top"]["role"] == "side"
+    assert "thumbnail_jpeg_b64" not in cameras["front"]
+    assert "thumbnail_jpeg_b64" not in cameras["top"]
+
+
+def test_reveal_buckets_gain_a_timestamp_from_their_producer_span(
+    _make_span: Callable[..., Span], _wrap_spans: Callable[..., list[ResourceSpans]]
+) -> None:
+    """Each producer span stamps the bucket its card keys visibility on."""
+    store = TelemetryStore()
+    store.ingest_spans(
+        _wrap_spans(
+            [
+                _make_span("reasoner.tick", attrs={"openral.reasoner.tool": "execute_rskill"}),
+                _make_span("slam.occupancy_grid", attrs={"openral.slam.frame_id": "map"}),
+                _make_span("world.pointcloud", attrs={"openral.world.pointcloud.n_points": 12}),
+                _make_span(
+                    "world.scene_objects", attrs={"openral.world_state.scene_objects.count": 0}
+                ),
+                _make_span(
+                    "world_state.snapshot", attrs={"openral.world_state.components_stale": 0}
+                ),
+                _make_span(
+                    "hal.read_state",
+                    attrs={
+                        "openral.hal.joint.names": ["FL_hip_joint"],
+                        "openral.hal.joint.positions": [-0.1],
+                    },
+                ),
+                _make_span(
+                    "sensors.read_latest",
+                    attrs={"openral.sensors.source": "front", "openral.sensors.modality": "rgb"},
+                ),
+            ]
+        )
+    )
+    topics = store.snapshot()["topics"]
+    for key in ("reasoner", "slam", "pointcloud", "scene_objects", "world_state", "robot_state"):
+        assert topics[key]["ts_unix"] > 0, f"{key} has no ts_unix; its card stays hidden"
+    # Cameras stay mounted from first paint (hero front+top). Other cards
+    # still hide until their producer stamps ts_unix.
+    assert "front" in topics["perception"]["cameras"]
+    assert topics["perception"]["cameras"]["front"]["role"] == "main"
+
+
+def test_hero_camera_keys_match_go2_and_go2_z1_manifests() -> None:
+    """Dashboard slots must be the HAL/Foxglove keys, not invented names."""
+    from pathlib import Path
+
+    from openral_core.schemas import RobotDescription
+    from openral_observability.dashboard.store import HERO_CAMERA_KEYS
+
+    repo = Path(__file__).resolve().parents[3]
+    for rel in ("robots/go2/robot.yaml", "robots/go2_z1/robot.yaml"):
+        desc = RobotDescription.from_yaml(repo / rel)
+        names = {spec.name for spec in desc.sensors}
+        assert set(HERO_CAMERA_KEYS) <= names, f"{rel} missing {HERO_CAMERA_KEYS}"

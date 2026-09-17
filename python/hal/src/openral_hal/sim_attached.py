@@ -690,45 +690,13 @@ class SimAttachedHAL:
                 evidence refs, or unknown body names. The previous snapshot is
                 preserved on failure.
         """
-        by_id = {obj.object_id: obj for obj in objects}
-        if len(by_id) != len(objects):
-            raise ROSConfigError("Attached collision object ids must be unique.")
-        handles = self._mujoco_handles()
-        if handles is None:
-            if objects:
-                raise ROSConfigError(
-                    "SimAttachedHAL attachment body masking requires MuJoCo handles."
-                )
-            self._attached_objects = {}
-            self._attached_body_ids = frozenset()
-            return
+        from openral_hal._mujoco_attached import resolve_attached_mujoco_bodies
 
-        import mujoco  # noqa: PLC0415  # reason: optional sim dependency guarded by handles
-
-        model, _data = handles
-        roots: set[int] = set()
-        for obj in objects:
-            prefix = "mujoco_body:"
-            if obj.evidence_ref is None or not obj.evidence_ref.startswith(prefix):
-                raise ROSConfigError(
-                    f"Attached object {obj.object_id!r} requires "
-                    "evidence_ref='mujoco_body:<body-name>' in deploy sim."
-                )
-            body_name = obj.evidence_ref.removeprefix(prefix)
-            body_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name))
-            if body_id < 0:
-                raise ROSConfigError(
-                    f"Attached object {obj.object_id!r} references unknown "
-                    f"MuJoCo body {body_name!r}."
-                )
-            roots.add(body_id)
-
-        body_ids = set(roots)
-        for body_id in range(1, int(model.nbody)):
-            if int(model.body_parentid[body_id]) in body_ids:
-                body_ids.add(body_id)
+        by_id, body_ids = resolve_attached_mujoco_bodies(
+            objects, handles=self._mujoco_handles()
+        )
         self._attached_objects = by_id
-        self._attached_body_ids = frozenset(body_ids)
+        self._attached_body_ids = body_ids
 
     def read_attached_objects(self) -> list[AttachedCollisionObject]:
         """Return the current attachment snapshot in stable object-id order."""

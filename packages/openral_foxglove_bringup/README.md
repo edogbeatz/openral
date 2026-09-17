@@ -129,7 +129,7 @@ stack beside it; everything else is tabbed, one click away.
 | Panel | Topics | Shows |
 |---|---|---|
 | 3D · scene (hero) | `/robot_description`, `/tf`, `/map`, `/octomap_point_cloud_centers`, `/openral/world_voxels_cloud`, `/openral/world_collisions_markers`, `/odom`, `/scan` | The robot in its world — URDF posed by TF, occupancy grid, voxels, collision capsules |
-| Image ×N | `/openral/cameras/<slot>/image` | One panel per camera slot in the scene's `cameras:` list |
+| Image ×N | `/openral/cameras/<slot>/image` + `/camera_info` | One panel per camera slot; `top` leads when present (third-person). CameraInfo attached |
 
 **Scene tabs**
 
@@ -176,8 +176,9 @@ python -m openral_foxglove_bringup.layout --follow-frame openarm_base
 ```
 
 `--follow-frame` defaults to the ROS-conventional `base_link`, and a robot
-that names its root otherwise (OpenArm broadcasts `openarm_base`) needs it
-passed. Getting it wrong is not a partial failure: Foxglove renders **nothing**
+that names its root otherwise (OpenArm broadcasts `openarm_base`; Go2's
+URDF root is `base`) needs it passed. Getting it wrong is not a partial
+failure: Foxglove renders **nothing**
 in a 3D panel whose follow frame is absent from TF — no robot model, no point
 clouds, no collision markers — while every topic underneath keeps publishing.
 The generated layout takes this from `RobotDescription.base_frame`, so it is
@@ -223,8 +224,26 @@ Under a real deploy-sim, set **only** `with_robot_state_publisher:=true` — the
 sim is the real `/joint_states` source; a second publisher would fight it.
 Resolve a manifest robot's URDF via `robot_descriptions` (e.g.
 `panda_description` for `franka_panda` / `panda_mobile`). `openarm` has no local
-URDF. Meshes render only when the URDF's `package://` paths resolve
-to an ament package on the ROS path. See `VERIFICATION.md`.
+URDF. `openral deploy` keeps `package://` mesh filenames (Studio's web
+client only requests that scheme from the bridge) and registers each
+resolvable `robot_descriptions` package (Go2 `go2_description`, etc.) on
+a throwaway ament prefix handed to the bridge as `AMENT_PREFIX_PATH`.
+See `VERIFICATION.md`.
+
+Two viewer facts that are *in the generated layout*, not in Studio defaults:
+
+- **COLLADA up-axis.** `robot_descriptions` DAEs are authored for RViz,
+  which ignores `<up_axis>`. Foxglove honours it and will draw Go2 on its
+  back unless the 3D panel sets `ignoreColladaUpAxis` + `meshUpAxis: z_up`
+  (`layout.py` already does). Re-import after regenerating.
+- **Stale mesh errors.** After the overlay lands, reconnect the websocket
+  or toggle `/robot_description` off/on. Studio caches a prior
+  `Package [go2_description] does not exist` and keeps a red `!` even when
+  the live bridge can serve the DAEs.
+
+A red `!` on mesh-bearing links is a fetch/link error, not the TF-axis
+slider. `Head_upper` / `Head_lower` are collision-only (no snout mesh);
+inertial rotor links have no geometry — those are expected.
 
 ## Compress camera images
 
@@ -232,15 +251,18 @@ Raw `sensor_msgs/Image` is ~9 MB/s per camera and saturates a laptop link and
 Foxglove's send buffer. Opt in to `image_transport` republishers that emit
 `sensor_msgs/CompressedImage` siblings (~10× smaller; Foxglove renders them
 natively in the Image panel). The `/compressed` topics are on the Bucket-1
-allowlist:
+allowlist.
+
+`openral deploy sim --foxglove` **turns this on** (republishers + a
+scene-matched layout pointing at `/compressed`). Re-import that JSON after
+a graph restart. Standalone launch stays opt-in so a fidelity-sensitive
+cell can keep the raw path:
 
 ```bash
 ros2 launch openral_foxglove_bringup foxglove.launch.py \
   republish_compressed:=true \
   compressed_camera_topics:="/openral/cameras/base/image /openral/cameras/left_wrist/image"
 ```
-
-Default is off, so the raw path stays available for fidelity-sensitive use.
 
 ## Bucket-2 markers
 

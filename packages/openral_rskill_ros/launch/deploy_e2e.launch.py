@@ -64,6 +64,7 @@ if TYPE_CHECKING:
     # `from __future__ import annotations` keeps the annotation a string.
     from openral_core import RobotDescription, SensorSpec
 from lifecycle_msgs.msg import Transition
+from openral_foxglove_bringup.mesh_uris import prepare_foxglove_mesh_overlay
 from openral_foxglove_bringup.topics import (
     ASSET_URI_ALLOWLIST,
     BUCKET1_TOPIC_WHITELIST,
@@ -340,7 +341,7 @@ def _attached_collision_enabled(
 
 
 def _go2_hub_acm_seed_q(description: object) -> list[float] | None:
-    """Hub ``default_joint_pos`` for Go2 ACM rest-pose excludes.
+    """Hub ``default_joint_pos`` for Go2 / go2_z1 ACM rest-pose excludes.
 
     OpenRAL #6 snaps HAL spawn to hip ±0.1. MJCF keyframe 0 is menagerie
     hip 0.0. Seeding ACM at the keyframe misses FL_thigh↔FR_thigh capsule
@@ -350,8 +351,13 @@ def _go2_hub_acm_seed_q(description: object) -> list[float] | None:
     ``initial_configuration`` and/or logs ``safety.collision`` at
     step=0.
     Non-Go2 descriptions return None (keyframe / zeros).
+
+    ``go2_z1`` still seeds the **12-D** Hub stand: ACM lowering reads the
+    bare ``rd:go2_mj_description`` MJCF (the arm is composed only at HAL
+    build time), so a 19-D seed would not match that model's joint count.
     """
-    if str(getattr(description, "name", "")).lower() != "go2":
+    name = str(getattr(description, "name", "")).lower()
+    if name not in ("go2", "go2_z1"):
         return None
     from openral_hal.go2 import GO2_HOME_JOINT_TARGETS
 
@@ -508,7 +514,9 @@ def _build_driver_includes(scene_drivers: list, deploy_config: str) -> list:  # 
     return includes
 
 
-def _write_foxglove_layout(cameras: list[str], robot_id: str, base_frame: str) -> str | None:
+def _write_foxglove_layout(
+    cameras: list[str], robot_id: str, base_frame: str, *, compressed: bool = True
+) -> str | None:
     """Generate a Foxglove layout for the cameras this deploy actually publishes.
 
     The shipped ``config/openral_layout.json`` is generated for
@@ -522,6 +530,11 @@ def _write_foxglove_layout(cameras: list[str], robot_id: str, base_frame: str) -
     the tree. The library default is the ROS-conventional ``base_link``, which
     OpenArm does not broadcast (its root is ``openarm_base``), so the robot's
     own ``base_frame`` is threaded through rather than guessed.
+
+    ``compressed=True`` (the deploy default) points Image panels at the
+    ``image_transport`` ``/compressed`` siblings — raw 640×480 RGB8 is
+    ~9 MB/s/camera and saturates a laptop websocket. Pair with
+    ``_foxglove_compressed_republishers``.
 
     A layout is imported client-side, so no launch argument can push one into
     the viewer — but the launch is the only place that knows the answer, so it
@@ -537,13 +550,45 @@ def _write_foxglove_layout(cameras: list[str], robot_id: str, base_frame: str) -
 
         path = pathlib.Path(tempfile.gettempdir()) / f"openral_layout_{robot_id}.json"
         path.write_text(
-            json.dumps(build_layout(cameras, follow_frame=base_frame), indent=2),
+            json.dumps(
+                build_layout(cameras, compressed=compressed, follow_frame=base_frame),
+                indent=2,
+            ),
             encoding="utf-8",
         )
     except (ImportError, OSError, ValueError) as exc:
         print(f"[deploy_e2e] could not write a scene-matched Foxglove layout: {exc!r}", flush=True)
         return None
     return str(path)
+
+
+def _foxglove_compressed_republishers(
+    cameras: list[str], *, use_sim_time: bool
+) -> list[Node]:
+    """``image_transport`` raw→compressed republishers for Foxglove Image panels.
+
+    Same nodes ``foxglove.launch.py`` spawns when ``republish_compressed:=true``.
+    Kept next to the layout generator because ``--foxglove`` on deploy must
+    emit both the ``/compressed`` topics and a layout that points at them.
+    """
+    nodes: list[Node] = []
+    for idx, name in enumerate(cameras):
+        topic = f"/openral/cameras/{name}/image"
+        nodes.append(
+            Node(
+                package="image_transport",
+                executable="republish",
+                name=f"openral_foxglove_compressed_republisher_{idx}",
+                output="log",
+                arguments=["raw", "compressed"],
+                parameters=[{"use_sim_time": use_sim_time}],
+                remappings=[
+                    ("in", topic),
+                    ("out/compressed", topic + "/compressed"),
+                ],
+            )
+        )
+    return nodes
 
 
 #: Conventional file name for a HAL package's vendor ``ros2_control`` bringup.
@@ -1647,6 +1692,12 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     #   publishes its own URDF on ``/robot_description``. ``resolve_asset`` returns ``None`` for
     #   it, so RSP is skipped (the URDF is already on the bus).
     extra_nodes: list = []
+    # Foxglove Studio (web + desktop) only requests ``package://`` from the
+    # bridge. ``file://`` is read off the machine running Studio, which is
+    # the wrong disk when the viewer is on a laptop and the meshes are on
+    # the deploy host. Register resolvable ``robot_descriptions`` packages
+    # as an ament prefix and hand that to the bridge process.
+    foxglove_mesh_env: dict[str, str] = {}
 
     # Vendor ros2_control bringup, on the real path only — see
     # ``_build_real_bringup_include``. This is what keeps ``deploy run`` a
@@ -1670,6 +1721,17 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         if urdf_path is not None:
             with open(urdf_path, encoding="utf-8") as fh:
                 robot_description_xml = fh.read()
+            if enable_foxglove:
+                foxglove_mesh_env, mesh_pkgs = prepare_foxglove_mesh_overlay(
+                    robot_description_xml, urdf_path=pathlib.Path(urdf_path)
+                )
+                if mesh_pkgs:
+                    print(
+                        f"[deploy_e2e] registered {len(mesh_pkgs)} package:// mesh "
+                        f"package(s) ({', '.join(mesh_pkgs)}) on the Foxglove ament "
+                        f"overlay so app.foxglove.dev can fetch {urdf_path} visuals",
+                        flush=True,
+                    )
             extra_nodes.append(
                 Node(
                     package="robot_state_publisher",
@@ -2369,6 +2431,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             executable="foxglove_bridge",
             name="openral_foxglove_bridge",
             output="screen",
+            additional_env=foxglove_mesh_env,
             parameters=[
                 {
                     "address": "127.0.0.1",
@@ -2391,16 +2454,27 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         )
         nodes.append(TimerAction(period=5.0, actions=[foxglove_bridge_node]))
 
+        # Sim renders every manifest RGB (``sim_placement``); a real cell only
+        # publishes cameras that carry a ``deploy_binding``. Using the bound
+        # list on sim left Go2's Image panel on ``front`` only when the
+        # operator imported a hand-built layout — and ``front`` cannot see
+        # the robot. ``build_layout`` then leads with ``top`` when present.
+        layout_cameras = (
+            list(rgb_camera_names) if hal_mode == "sim" else list(bound_rgb_camera_names)
+        )
         layout_path = _write_foxglove_layout(
-            bound_rgb_camera_names, description.name, description.base_frame
+            layout_cameras, description.name, description.base_frame, compressed=True
         )
         if layout_path is not None:
             print(
                 f"[deploy_e2e] foxglove: ws://127.0.0.1:{foxglove_port} — import the "
                 f"scene-matched layout from {layout_path} "
-                f"(cameras: {', '.join(bound_rgb_camera_names)})",
+                f"(cameras: {', '.join(layout_cameras)}, compressed images)",
                 flush=True,
             )
+        nodes.extend(
+            _foxglove_compressed_republishers(layout_cameras, use_sim_time=use_sim_time)
+        )
 
         # Bucket-2 converter. The layout's collision/voxel panels read
         # `/openral/world_collisions_markers` + `/openral/world_voxels_cloud`,

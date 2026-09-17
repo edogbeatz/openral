@@ -81,11 +81,33 @@ def camera_image_topic(camera: str, *, compressed: bool = False) -> str:
     return f"/openral/cameras/{camera}/image{suffix}"
 
 
+def camera_info_topic(camera: str) -> str:
+    """Return the CameraInfo topic paired with one camera slot's Image.
+
+    Foxglove's Image panel needs this attached to undistort and to share a
+    ``frame_id`` with the Image. The topic is the sensor-name sibling of
+    :func:`camera_image_topic`; the *frame* stamped on both messages is the
+    manifest ``SensorSpec.frame_id``, not this slot name.
+
+    Example:
+        >>> camera_info_topic("front")
+        '/openral/cameras/front/camera_info'
+    """
+    return f"/openral/cameras/{camera}/camera_info"
+
+
 def _scene_panel(follow_frame: str) -> dict[str, Any]:
     """3D panel config for the hero view: the robot inside its environment."""
     return {
         "followTf": follow_frame,
-        "scene": {"transforms": {"showLabel": False}},
+        "scene": {
+            "transforms": {"showLabel": False},
+            # Go2 (and most robot_descriptions COLLADA) is authored for RViz,
+            # which ignores <up_axis>. Foxglove honours Y-up and draws the
+            # quadruped on its back. Match RViz so the mesh stands on TF.
+            "ignoreColladaUpAxis": True,
+            "meshUpAxis": "z_up",
+        },
         "cameraState": {
             "perspective": True,
             "distance": 5,
@@ -153,7 +175,10 @@ def _bucket2_panel(follow_frame: str) -> dict[str, Any]:
     """3D panel config for the Bucket-2 converter outputs, close in on the robot."""
     return {
         "followTf": follow_frame,
-        "scene": {},
+        "scene": {
+            "ignoreColladaUpAxis": True,
+            "meshUpAxis": "z_up",
+        },
         "cameraState": {
             "perspective": True,
             "distance": 4,
@@ -224,6 +249,19 @@ def _stack(panel_ids: Sequence[str], direction: str = "column") -> Any:
     return _split(direction, head, _stack(tail, direction), round(100.0 / len(panel_ids), 2))
 
 
+def _order_layout_cameras(cameras: Sequence[str]) -> list[str]:
+    """Put the canonical third-person slot first when the deploy has one.
+
+    An egocentric ``front`` / ``head`` camera looks *out* from the robot, so
+    the body is behind the lens. Foxglove's first Image panel should show
+    ``top`` (the overview) when that slot exists, then the onboard cameras.
+    """
+    names = list(cameras)
+    if "top" in names:
+        return ["top", *[n for n in names if n != "top"]]
+    return names
+
+
 def build_layout(
     cameras: Sequence[str] = DEFAULT_CAMERAS,
     *,
@@ -264,19 +302,27 @@ def build_layout(
         ['Image!cam_0', 'Image!cam_1']
         >>> layout["configById"]["Image!cam_0"]["imageMode"]["imageTopic"]
         '/openral/cameras/head/image'
+        >>> layout["configById"]["Image!cam_0"]["imageMode"]["calibrationTopic"]
+        '/openral/cameras/head/camera_info'
         >>> layout["configById"]["3D!scene"]["followTf"]
         'base_link'
     """
     if not cameras:
         raise ValueError("cameras must not be empty — the layout needs at least one Image panel")
 
+    cameras = _order_layout_cameras(cameras)
     camera_ids = [f"Image!cam_{i}" for i, _ in enumerate(cameras)]
     config_by_id: dict[str, Any] = {
         # ---- hero: the robot in its environment -------------------------
         "3D!scene": _scene_panel(follow_frame),
         # ---- the cameras -------------------------------------------------
         **{
-            panel_id: {"imageMode": {"imageTopic": camera_image_topic(name, compressed=compressed)}}
+            panel_id: {
+                "imageMode": {
+                    "imageTopic": camera_image_topic(name, compressed=compressed),
+                    "calibrationTopic": camera_info_topic(name),
+                }
+            }
             for panel_id, name in zip(camera_ids, cameras, strict=True)
         },
         # ---- scene-side tabs ---------------------------------------------

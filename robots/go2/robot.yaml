@@ -210,6 +210,26 @@ sensors:
       parent_body: "base"
       pos: [0.32715, -0.00003, 0.04297]
       target: [1.32715, -0.00003, 0.0]
+  # Third-person overview (menagerie ``track`` pose). The front camera cannot
+  # see the robot — it looks +X from the face. No vla_feature_key: viz only.
+  - name: "top"
+    modality: "rgb"
+    frame_id: "top_camera"
+    parent_frame: "base"
+    rate_hz: 15.0
+    intrinsics:
+      width: 640
+      height: 480
+      fx: 515.0
+      fy: 515.0
+      cx: 320.0
+      cy: 240.0
+    encoding: "rgb8"
+    sim_placement:
+      parent_body: "base"
+      pos: [0.846, -1.465, 0.916]
+      target: [0.0, 0.0, 0.0]
+      fovy_deg: 50.0
 
 capabilities:
   locomotion: ["quadruped"]

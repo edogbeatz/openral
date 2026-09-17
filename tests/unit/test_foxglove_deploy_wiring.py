@@ -176,14 +176,23 @@ def test_the_overridden_top_slot_keeps_the_feature_key_the_policy_was_trained_on
         )
 
 
-def test_the_launch_generates_its_layout_from_the_bound_cameras() -> None:
-    """The layout must come from the deploy, not from a fixed default."""
+def test_the_launch_generates_its_layout_from_the_cameras_this_deploy_publishes() -> None:
+    """The layout must come from the deploy, not from a fixed default.
+
+    Sim renders every manifest RGB (``sim_placement``). A real cell only
+    publishes cameras that carry a ``deploy_binding``. Using the bound list
+    on sim hid Go2's third-person ``top`` cam and left the Image panel on
+    the egocentric ``front`` view, which cannot see the robot.
+    """
     text = _LAUNCH.read_text(encoding="utf-8")
+    assert "list(rgb_camera_names) if hal_mode == \"sim\"" in text
+    assert "list(bound_rgb_camera_names)" in text
     call = text.split("_write_foxglove_layout(", 2)[-1]
-    assert call.lstrip().startswith("bound_rgb_camera_names"), (
-        "the layout must be generated from the deploy-bound cameras; a hardcoded "
-        "default cannot know the scene"
+    assert call.lstrip().startswith("layout_cameras"), (
+        "the layout must be generated from the cameras this deploy publishes"
     )
+    assert "compressed=True" in call
+    assert "_foxglove_compressed_republishers" in text
     assert 'getattr(s, "deploy_binding", None) is not None' in text
 
 

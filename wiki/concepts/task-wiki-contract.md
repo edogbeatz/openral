@@ -1,7 +1,7 @@
 ---
 type: concept
 tags: [openral, wiki, tasks, linear]
-updated: 2026-09-16
+updated: 2026-09-17
 linear: [1-131]
 ---
 
@@ -41,10 +41,12 @@ No cite, no task.
 | --- | --- |
 | Create / plan | Cite pages. Link Linear ↔ wiki, not Linear ↔ chat. |
 | Start | Read `wiki/index.md` and the cited pages before editing code. |
-| Finish | Update touched pages, refresh the index, append `wiki/log.md`. |
+| Finish | **Mandatory.** Update touched pages, refresh the index if needed, append `wiki/log.md`. No log entry, the task is not done. Do not ask whether to file. |
 
 Durable answers from a task go under `wiki/analyses/` with
-`type: analysis` (from [[concepts/wiki-maintenance-workflow]]).
+`type: analysis` (from [[concepts/wiki-maintenance-workflow]]). The
+skill's **Done / finish** is the close-out checklist; log op is `work`
+unless the task was ingest / query / lint.
 
 ## Referencing Linear from the wiki
 

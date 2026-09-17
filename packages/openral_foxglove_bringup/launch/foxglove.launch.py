@@ -25,13 +25,16 @@ ws://localhost:8765 → import ``config/openral_layout.json``.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, OpaqueFunction, SetEnvironmentVariable
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_context import LaunchContext
 from launch.substitutions import Command, LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+from openral_foxglove_bringup.mesh_uris import prepare_foxglove_mesh_overlay
 from openral_foxglove_bringup.topics import (
     ASSET_URI_ALLOWLIST,
     BUCKET1_TOPIC_WHITELIST,
@@ -256,9 +259,26 @@ def generate_launch_description() -> LaunchDescription:
         args=[republish_compressed, compressed_camera_topics, use_sim_time],
     )
 
+    def _mesh_overlay_env(
+        context: LaunchContext, urdf_path_cfg: LaunchConfiguration
+    ) -> list[SetEnvironmentVariable]:
+        raw = urdf_path_cfg.perform(context).strip()
+        if not raw:
+            return []
+        path = Path(raw)
+        if not path.is_file():
+            return []
+        env, _pkgs = prepare_foxglove_mesh_overlay(
+            path.read_text(encoding="utf-8"), urdf_path=path
+        )
+        return [SetEnvironmentVariable(name=key, value=value) for key, value in env.items()]
+
+    mesh_overlay_env = OpaqueFunction(function=_mesh_overlay_env, args=[urdf_path])
+
     return LaunchDescription(
         [
             *args,
+            mesh_overlay_env,
             bridge_safe,
             bridge_all,
             robot_state_publisher,

@@ -3,7 +3,7 @@
 # Sim-only spike. Boots the manifest-driven Go2 twin with gravity off so
 # the floating-base quadruped holds the menagerie `home` stand without a
 # locomotion controller. The generic camera rig splices the manifest's
-# front RGB camera onto `base`. Pair with:
+# front RGB and third-person `top` cameras onto `base`. Pair with:
 #
 #   openral doctor
 #   openral deploy sim --config scenes/deploy/go2_bench.yaml

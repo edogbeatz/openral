@@ -5830,6 +5830,7 @@ EmbodimentTag: TypeAlias = Literal[
     "g1",
     "galaxea_a1",
     "go2",
+    "go2_z1",
     "google_robot",
     "gr1",
     "h1",

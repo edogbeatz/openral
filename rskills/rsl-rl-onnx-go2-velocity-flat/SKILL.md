@@ -1,7 +1,7 @@
 ---
 name: rsl-rl-onnx-go2-velocity-flat
 description: >-
-  S1 Vision-Language-Action policy. Capabilities: navigate on terrain. Isaac Lab / Unitree rsl-rl ONNX locomotion for the 12-DoF Go2. Loads policy.onnx plus params/deploy.yaml and emits absolute JOINT_POSITION targets. Velocity command comes from policy_extras, not the reasoner prompt. Does not claim gait quality. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
+  S1 Vision-Language-Action policy. Capabilities: navigate on terrain. Isaac Lab / Unitree rsl-rl ONNX locomotion for the 12-DoF Go2. Loads policy.onnx plus params/deploy.yaml and emits absolute JOINT_POSITION targets. Velocity command defaults to policy_extras; execute_rskill / verify override via goal_params_json without editing YAML. Does not claim gait quality. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
 metadata:
   openral_rskill: true            # generated discovery view of an rSkill
   schema_version: 0.1
@@ -10,7 +10,7 @@ metadata:
   role: s1
   kind: vla
   model_family: rsl_rl_onnx
-  embodiment_tags: [go2]
+  embodiment_tags: [go2, go2_z1]
   actions: [navigate]
   objects: [terrain]
   scenes: [flat]
@@ -37,14 +37,14 @@ metadata:
 
 ## What it is
 
-An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). Isaac Lab / Unitree rsl-rl ONNX locomotion for the 12-DoF Go2. Loads policy.onnx plus params/deploy.yaml and emits absolute JOINT_POSITION targets. Velocity command comes from policy_extras, not the reasoner prompt. Does not claim gait quality.
+An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). Isaac Lab / Unitree rsl-rl ONNX locomotion for the 12-DoF Go2. Loads policy.onnx plus params/deploy.yaml and emits absolute JOINT_POSITION targets. Velocity command defaults to policy_extras; execute_rskill / verify override via goal_params_json without editing YAML. Does not claim gait quality.
 
 ## Capabilities
 
 - **Verbs:** navigate
 - **Objects:** terrain
 - **Scenes:** flat
-- **Embodiments:** go2
+- **Embodiments:** go2 · go2_z1
 
 ## Why this is discovery-only
 

@@ -28,6 +28,7 @@ The in-tree manifests are:
 | Single arm | `so100_follower`, `so101_follower`, `franka_panda`, `ur5e`, `ur10e`, `rizon4`, `sawyer`, `widowx`, `galaxea_a1` |
 | Bimanual | `aloha_bimanual`, `aloha_agilex`, `openarm`, `anvil_openarm_v2` |
 | Mobile manipulator | `panda_mobile`, `panda_mobile_vslam`, `google_robot`, `r1pro` |
+| Quadruped | `go2`, `go2_z1` (sim-only; `deploy run` refused until `hal.real` lands) |
 | Humanoid | `g1`, `h1`, `gr1` |
 
 Class is each manifest's `embodiment_kind`. `pusht_2d` is omitted: it is a

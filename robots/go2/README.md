@@ -8,28 +8,36 @@ real-physics MuJoCo digital twin (`Go2MujocoHAL` on the
 
 ## What this is — and what it isn't
 
-This is a **sim-only spike**: enough HAL + manifest + deploy-sim bench
-to get past "no HAL entry" and publish joints + a spliced front camera.
-It is **not** a polished product, a walking controller, or a real-HW
-bring-up.
+This is a **sim-only** Unitree Go2: HAL + manifest + two deploy scenes.
+`hal.real` is null, so `openral deploy run` is refused. **Go2 Edu**
+(extra cameras / compute) is a separate follow-up. There is no
+`BODY_TWIST` / `cmd_vel` contract.
 
-The MuJoCo digital twin is a **HAL contract validator**, not a useful
-quadruped sim. The Go2 has a floating base and no locomotion
-controller; left to its own devices it falls over under gravity. The
-closed-loop sim tests and `scenes/deploy/go2_bench.yaml` therefore run
-with `gravity_enabled=False`.
+The twin has a floating base. With no policy it falls under gravity, so
+the HAL default (`hal.parameters.defaults.gravity_enabled`) is `false`.
+Two scenes override that:
 
-The twin is the right tool for verifying:
+| Scene | Gravity | What it is for |
+| --- | --- | --- |
+| [`scenes/deploy/go2_bench.yaml`](../../scenes/deploy/go2_bench.yaml) | off | HAL pipe proof: 12-DoF layout, lifecycle, camera rig, Hub stand |
+| [`scenes/deploy/go2_walk.yaml`](../../scenes/deploy/go2_walk.yaml) | on (+ collidable ground, 200 Hz proprio) | rsl-rl ONNX locomotion (`rskills/rsl-rl-onnx-go2-velocity-flat`) |
+
+The same 12-DoF skill runs on the Go2 + Z1 composite
+([`robots/go2_z1/`](../go2_z1/)) — the runner hold-pads the arm.
+
+The bench is the right tool for verifying:
 
 - 12-DoF joint-position action layout,
 - lifecycle wiring (`connect → read_state → send_action → estop`),
 - joint indexing and ordering (FL, FR, RL, RR × hip / thigh / calf),
 - `RobotDescription` round-trip,
-- the generic camera rig splicing the front RGB camera into the bare MJCF.
+- the generic camera rig splicing the front RGB and third-person `top`
+  cameras into the bare MJCF.
 
-It is **not** the tool for rolling out a walking policy. Gait + balance
-are the same follow-up class as G1/H1 S0 (CLAUDE.md §6.2). **Go2 Edu**
-(extra cameras / compute) is a separate follow-up.
+The walk scene is the right tool for a locomotion policy. ACM pairs on
+that scene are **stand-justified, not gait-swept** — a genuine
+base↔calf contact mid-stride is admitted rather than caught. Sim-only
+containment until a real HAL lands.
 
 ## At a glance
 
@@ -39,7 +47,7 @@ are the same follow-up class as G1/H1 S0 (CLAUDE.md §6.2). **Go2 Edu**
 | `embodiment_kind` | `quadruped` |
 | Joints | 12 actuated (4 × hip / thigh / calf). The MJCF's free joint is implicit world state and is NOT enumerated in `joints`. |
 | End-effectors | none |
-| Sensors | spliced front RGB (`front` → `observation.images.front`). Hardware radar / Edu extras are **not** declared. |
+| Sensors | spliced front RGB (`front` → `observation.images.front`) plus viz-only `top` (3/4 overview; no VLA key). Hardware radar / Edu extras are **not** declared. |
 | Embodiment tags | `go2`, `unitree_go2`, `quadruped` |
 | Supported VLA embodiments | `go2` |
 | Supported control modes | `joint_position` (no `body_twist` this spike) |
@@ -101,12 +109,15 @@ manifest explicitly:
 ```bash
 openral doctor
 openral deploy sim --config scenes/deploy/go2_bench.yaml
+# gravity on + rsl-rl ONNX (see the scene header for the ExecuteRskill goal):
+openral deploy sim --config scenes/deploy/go2_walk.yaml --dashboard --foxglove
 ```
 
 `--dry-run` resolves the HAL registry + `hal_mode=sim` without
 bringing up ROS. Gravity is pinned off in this manifest's
-`hal.parameters.defaults` (consumed by `build_hal`, not a ROS param).
-Real hardware (`deploy run`) is refused until `hal.real` is filled in.
+`hal.parameters.defaults` (consumed by `build_hal`, not a ROS param);
+`go2_walk.yaml` overlays `gravity_enabled: true`. Real hardware
+(`deploy run`) is refused until `hal.real` is filled in.
 
 ## Pair with
 
@@ -114,16 +125,20 @@ Real hardware (`deploy run`) is refused until `hal.real` is filled in.
 | --- | --- |
 | Python HAL adapter | `openral_hal.go2.Go2MujocoHAL` (MuJoCo digital twin) |
 | Python description | `openral_hal.GO2_DESCRIPTION` |
-| Deploy bench | [`scenes/deploy/go2_bench.yaml`](../../scenes/deploy/go2_bench.yaml) |
-| ROS lifecycle node | `packages/openral_hal_go2` (manifest-driven) |
+| Deploy bench (gravity off) | [`scenes/deploy/go2_bench.yaml`](../../scenes/deploy/go2_bench.yaml) |
+| Deploy walk (gravity on) | [`scenes/deploy/go2_walk.yaml`](../../scenes/deploy/go2_walk.yaml) |
+| Locomotion rSkill | [`rskills/rsl-rl-onnx-go2-velocity-flat`](../../rskills/rsl-rl-onnx-go2-velocity-flat/) |
+| Composite sibling | [`robots/go2_z1/`](../go2_z1/) |
+| ROS lifecycle node | `packages/openral_hal_go2` (also hosts `robots/go2_z1`) |
 | Sim test | `tests/sim/test_go2_hal_mujoco.py` |
 | Future real-HW HAL | not started — `unitree_sdk2` + locomotion controller |
 
 ## Remaining gaps (pipe_gate-quality smoke)
 
-- No walking / BODY_TWIST control (HAL now publishes `base_pose_6dof` +
+- No `BODY_TWIST` / `cmd_vel` (HAL publishes `base_pose_6dof` +
   `base_twist` for rsl-rl obs via `/odom`; no `mobile_base` tag until a
-  cmd_vel contract exists).
+  cmd_vel contract exists). Walking is the 12-D `JOINT_POSITION`
+  rsl-rl ONNX skill on `go2_walk`, not a gait inside the HAL.
 - No real HAL (`hal.real` is null).
 - No authored collision geometry / ACM (`openral collision lower` not run).
   Deploy may still MJCF-lower self-collision capsules. ACM rest should
@@ -133,7 +148,9 @@ Real hardware (`deploy run`) is refused until `hal.real` is filled in.
   `/openral/attachment_state`. Enabling that gate fail-closes every
   WorldState snapshot as `DROP_ATTACHED_OVERFLOW`
   (`attachment_stamp_ns == 0`) and drops scripted `JOINT_POSITION`.
-- Front-camera intrinsics are nominal, not calibrated.
+- Front-camera intrinsics are nominal, not calibrated. The spliced
+  `front` cam looks at camera-rig staging (infinite checker + skybox),
+  not a task scene — a flat gray floor used to look zoomed-in in Foxglove.
 - Hardware radar / Go2 Edu cameras / compute are undeclared.
 - `openral detect` does not distinguish Go2 from G1/H1 on DDS.
 
@@ -149,6 +166,7 @@ Real hardware (`deploy run`) is refused until `hal.real` is filled in.
 ## See also
 
 - [`python/hal/README.md`](../../python/hal/README.md) — `Go2MujocoHAL`.
+- [`robots/go2_z1/`](../go2_z1/) — same legs, Z1 arm bolted on `base`.
 - [`robots/g1/`](../g1/) / [`robots/h1/`](../h1/) — Unitree humanoid
   siblings this spike mirrors.
 - [`docs/architecture/repo-state-map.html`](../../docs/architecture/repo-state-map.html)

@@ -12,7 +12,8 @@ so it falls over under gravity. Closed-loop tests and the ``go2_bench``
 deploy scene run with ``gravity_enabled=False``. The suite validates the
 12-DoF joint-position action layout, lifecycle wiring
 (``connect → read_state → send_action → estop``), joint indexing,
-``RobotDescription`` round-trip, and the spliced front RGB camera
+``RobotDescription`` round-trip, and the spliced front + third-person
+RGB cameras
 (CLAUDE.md §1.11). Walking, balance, and a real-HW ``unitree_sdk2``
 adapter are follow-ups — same posture as H1 (no S0 cerebellum) and G1
 before ADR-0089.
@@ -50,9 +51,12 @@ Example:
 
 from __future__ import annotations
 
+import time
+
 from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import quat_xyzw_to_yaw
 from openral_core.schemas import (
+    Action,
     AssetRefs,
     CameraSimPlacement,
     ControlMode,
@@ -71,7 +75,7 @@ from openral_core.schemas import (
     UrdfAsset,
 )
 
-from openral_hal._mujoco_arm import MujocoArmHAL
+from openral_hal._mujoco_arm import _IDLE_STEP_CAP, MujocoArmHAL
 
 __all__ = [
     "GO2_DESCRIPTION",
@@ -223,6 +227,11 @@ def _go2_joint_specs() -> list[JointSpec]:
 # Go2 lens. Run a checkerboard before this feeds SLAM / object-lift.
 _GO2_FRONT_CAMERA_POS: tuple[float, float, float] = (0.32715, -0.00003, 0.04297)
 _GO2_FRONT_CAMERA_TARGET: tuple[float, float, float] = (1.32715, -0.00003, 0.0)
+# Menagerie ``go2_mjx.xml`` ``track`` camera on ``base`` — a 3/4 view so
+# Foxglove's Image panel can show the robot. The front cam looks +X from
+# the face, so the body is behind that lens and never appears in-frame.
+_GO2_TOP_CAMERA_POS: tuple[float, float, float] = (0.846, -1.465, 0.916)
+_GO2_TOP_CAMERA_TARGET: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
 
 GO2_DESCRIPTION = RobotDescription(
@@ -248,7 +257,24 @@ GO2_DESCRIPTION = RobotDescription(
                 pos=_GO2_FRONT_CAMERA_POS,
                 target=_GO2_FRONT_CAMERA_TARGET,
             ),
-        )
+        ),
+        SensorSpec(
+            name="top",
+            modality=SensorModality.RGB,
+            frame_id="top_camera",
+            parent_frame="base",
+            rate_hz=15.0,
+            intrinsics=IntrinsicsPinhole(
+                width=640, height=480, fx=515.0, fy=515.0, cx=320.0, cy=240.0
+            ),
+            encoding="rgb8",
+            sim_placement=CameraSimPlacement(
+                parent_body="base",
+                pos=_GO2_TOP_CAMERA_POS,
+                target=_GO2_TOP_CAMERA_TARGET,
+                fovy_deg=50.0,
+            ),
+        ),
     ],
     capabilities=RobotCapabilities(
         locomotion=["quadruped"],
@@ -373,6 +399,12 @@ class Go2MujocoHAL(MujocoArmHAL):
             staleness_limit_s=staleness_limit_s,
         )
         self._pd_gains: dict[str, tuple[float, float]] = _go2_pd_gains()
+        # Last position targets the idle stepper must PD-hold. Torque motors
+        # cannot reuse the base idle_step (it leaves ``ctrl`` untouched, which
+        # for ``<motor>`` actuators is a constant-N·m fold, not a pose hold).
+        self._hold_targets: list[float] = list(GO2_HOME_JOINT_TARGETS)
+        #: Free-joint stand height captured after menagerie keyframe + Hub snap.
+        self._stand_base_z: float = 0.30
 
     def connect(self) -> None:
         """Load the MJCF, then snap actuated joints to Hub ``default_joint_pos``.
@@ -383,21 +415,83 @@ class Go2MujocoHAL(MujocoArmHAL):
         """
         super().connect()
         self._snap_actuated_home()
+        assert self._data is not None
+        self._stand_base_z = float(self._data.qpos[2])
 
     def _snap_actuated_home(self) -> None:
-        """Write :data:`GO2_HOME_JOINT_TARGETS` into actuated qpos + ctrl."""
+        """Write :data:`GO2_HOME_JOINT_TARGETS` into actuated qpos and PD-hold."""
         assert self._model is not None
         assert self._data is not None
         for name, target in zip(self._joint_names, GO2_HOME_JOINT_TARGETS, strict=True):
             qpos_addr = self._joint_qpos_addr.get(name)
             if qpos_addr is not None:
                 self._data.qpos[qpos_addr] = float(target)
-            act_idx = self._actuator_index.get(name)
-            if act_idx is not None:
-                self._data.ctrl[act_idx] = float(target)
+            qvel_addr = self._joint_qvel_addr.get(name)
+            if qvel_addr is not None:
+                self._data.qvel[qvel_addr] = 0.0
+        self._hold_targets = list(GO2_HOME_JOINT_TARGETS)
         import mujoco as mj  # noqa: PLC0415  # reason: optional sim-only dep
 
         mj.mj_forward(self._model, self._data)
+        # Seed torque from the PD law at the snapped pose (~0 N·m). Writing
+        # the position target into ``ctrl`` would apply that many N·m forever
+        # on the next idle ``mj_step`` and fold the calves into their stops.
+        self._per_step_update(self._hold_targets)
+
+    def send_action(self, action: Action) -> None:
+        """Remember the last waypoint so idle ticks PD-hold that stand."""
+        self._hold_targets = self._last_arm_targets(action)
+        super().send_action(action)
+
+    def reset_to_pose(self, pose: list[float], *, origin: bool = False) -> None:
+        """Snap qpos, then PD-hold ``pose`` and upright the free base.
+
+        ``origin`` is accepted for API parity with call sites that pass it;
+        the Go2 twin always recentres xy on tip recovery so Stand from the
+        dashboard does not leave the dog on its side across the floor.
+        """
+        del origin  # always recentre — tip recovery is the contract
+        super().reset_to_pose(pose)
+        self._hold_targets = [float(v) for v in pose]
+        self._per_step_update(self._hold_targets)
+        self._snap_base_upright(origin=True)
+
+    def _snap_base_upright(self, *, origin: bool = False) -> None:
+        """Pin the free joint upright at stand height; zero base twist."""
+        assert self._data is not None and self._model is not None
+        import mujoco as mj  # noqa: PLC0415  # reason: optional sim-only dep
+
+        x = 0.0 if origin else float(self._data.qpos[0])
+        y = 0.0 if origin else float(self._data.qpos[1])
+        z = float(self._stand_base_z)
+        # MuJoCo free-joint quat is wxyz; identity = upright.
+        self._data.qpos[0:7] = (x, y, z, 1.0, 0.0, 0.0, 0.0)
+        self._data.qvel[0:6] = 0.0
+        mj.mj_forward(self._model, self._data)
+
+
+    def idle_step(self, wall_dt_s: float | None = None) -> bool:
+        """Advance physics while PD-holding ``_hold_targets``.
+
+        The base ``MujocoArmHAL.idle_step`` leaves ``ctrl`` untouched so
+        position actuators stay put. Go2 motors are torque-mode: the same
+        leave-ctrl-alone path applies the last ``ctrl`` as constant N·m and
+        folds the legs. Recompute PD torque every idle ``mj_step``.
+        """
+        if not self._connected or self._data is None or self._model is None:
+            return False
+        import mujoco as mj  # noqa: PLC0415  # reason: optional sim-only dep
+
+        steps = 1
+        if wall_dt_s is not None and wall_dt_s > 0:
+            timestep = float(self._model.opt.timestep)
+            if timestep > 0:
+                steps = max(1, min(_IDLE_STEP_CAP, round(wall_dt_s / timestep)))
+        for _ in range(steps):
+            self._per_step_update(self._hold_targets)
+            mj.mj_step(self._model, self._data)
+        self._last_state_time = time.monotonic()
+        return True
 
     @property
     def base_pose(self) -> tuple[float, float, float]:

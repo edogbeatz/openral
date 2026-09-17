@@ -63,43 +63,71 @@ def _camera_element(sensor: SensorSpec) -> str:
     )
 
 
-# Visual-only ground plane: gives the cameras a surface to see without any
-# physics interaction (``contype=0 conaffinity=0`` → no collisions, so the arm
-# never contacts it and the safety kernel is unaffected). A bare arm MJCF has no
-# floor, so a forward-looking wrist camera would otherwise render pure void.
+# Visual-only infinite checker floor + gradient sky. A flat gray patch under
+# a black void made Foxglove's Image panel look "zoomed in" (the black sky
+# vanished into the panel chrome; only the slab remained). Checker + skybox
+# are still parameterless deploy staging, not task props — same menagerie
+# ``scene.xml`` pattern. ``contype=0 conaffinity=0`` so the floor never
+# contacts the robot or the safety kernel.
+_STAGING_SKYBOX = (
+    '<texture name="camrig_skybox" type="skybox" builtin="gradient" '
+    'rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>'
+)
+_STAGING_GROUND_TEX = (
+    '<texture name="camrig_ground" type="2d" builtin="checker" mark="edge" '
+    'rgb1="0.55 0.58 0.62" rgb2="0.28 0.31 0.36" markrgb="0.75 0.75 0.75" '
+    'width="300" height="300"/>'
+)
+_STAGING_GROUND_MAT = (
+    '<material name="camrig_ground" texture="camrig_ground" '
+    'texuniform="true" texrepeat="5 5" reflectance="0.2"/>'
+)
 _STAGING_FLOOR = (
-    '<geom name="camrig_floor" type="plane" size="2 2 0.1" pos="0 0 0" '
-    'rgba="0.85 0.85 0.85 1" contype="0" conaffinity="0"/>'
+    '<geom name="camrig_floor" type="plane" size="0 0 0.1" pos="0 0 0" '
+    'material="camrig_ground" contype="0" conaffinity="0"/>'
+)
+_STAGING_VISUAL = (
+    "\n  <visual>\n"
+    '    <headlight ambient="0.45 0.45 0.45" diffuse="0.55 0.55 0.55" '
+    'specular="0.1 0.1 0.1"/>\n'
+    '    <rgba haze="0.15 0.25 0.35 1"/>\n'
+    "  </visual>"
 )
 
 
+def _inject_asset_elements(xml: str, elements: str) -> str:
+    """Insert ``elements`` into an existing ``<asset>``, or create one."""
+    out, n = re.subn(r"(<asset\b[^>]*>)", rf"\1\n    {elements}", xml, count=1)
+    if n == 1:
+        return out
+    out, n = re.subn(r"(<worldbody\b)", rf"<asset>\n    {elements}\n  </asset>\n  \1", xml, count=1)
+    return out if n == 1 else xml
+
+
 def _ensure_staging(xml: str) -> str:
-    """Add minimal deploy-twin staging — a visual-only floor + fill light.
+    """Add minimal deploy-twin staging — a textured floor + sky + fill light.
 
     A bare arm MJCF ships no floor and (often) no lighting, so a gripper-mounted
     camera looking into the workspace renders pure black/void. This adds:
 
-    - a **visual-only** ground plane (no collisions) when the MJCF has no
-      ``type="plane"`` geom — universal, parameterless deploy staging, not task
-      props (CLAUDE.md: keep scene props in scene files);
-    - a moderate ambient ``<visual><headlight>`` when no ``<visual>`` block
-      exists, lifting shadows without washing out materials.
+    - a **visual-only** infinite checker ground plane (no collisions) when the
+      MJCF has no ``type="plane"`` geom — universal, parameterless deploy
+      staging, not task props (CLAUDE.md: keep scene props in scene files);
+    - a gradient skybox + haze and a moderate ambient ``<visual><headlight>``
+      when no ``<visual>`` block exists, so the upper half of a forward camera
+      is sky rather than void that Foxglove's dark Image panel swallows.
 
     Both are no-ops when the MJCF already declares them (a composed/scene MJCF
     set its own), so the rig composes with those rather than clobbering them.
     """
     if 'type="plane"' not in xml:
+        xml = _inject_asset_elements(xml, f"{_STAGING_GROUND_TEX}\n    {_STAGING_GROUND_MAT}")
         xml, n = re.subn(r"(</worldbody>)", f"        {_STAGING_FLOOR}\n      \\1", xml, count=1)
         if n != 1:  # no worldbody to stage into — leave the model as-is
             pass
     if "<visual" not in xml:
-        headlight = (
-            "\n  <visual>\n"
-            '    <headlight ambient="0.4 0.4 0.4" diffuse="0.4 0.4 0.4" '
-            'specular="0.1 0.1 0.1"/>\n'
-            "  </visual>"
-        )
-        out, n = re.subn(r"(<mujoco\b[^>]*>)", r"\1" + headlight, xml, count=1)
+        xml = _inject_asset_elements(xml, _STAGING_SKYBOX)
+        out, n = re.subn(r"(<mujoco\b[^>]*>)", r"\1" + _STAGING_VISUAL, xml, count=1)
         if n == 1:
             xml = out
     return xml
@@ -111,7 +139,8 @@ def rig_cameras_into_mjcf(xml: str, sensors: list[SensorSpec]) -> tuple[str, boo
     For every RGB ``SensorSpec`` with a ``CameraSimPlacement``
     whose camera name is absent from ``xml``, splice a ``<camera>`` into the
     named ``parent_body`` (or ``<worldbody>`` when ``parent_body`` is ``None``)
-    and ensure a fill light. Cameras already present are skipped (idempotent), so
+    and ensure checker-floor + skybox staging plus a fill light. Cameras already
+    present are skipped (idempotent), so
     a scene-attached or already-composed MJCF passes through unchanged
     (``changed=False``) and the caller can load the original file.
 

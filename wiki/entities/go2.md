@@ -1,19 +1,32 @@
 ---
 type: entity
 tags: [openral, go2, unitree, quadruped, hal, sim]
-updated: 2026-09-16
+updated: 2026-09-17
 ---
 
 # Unitree Go2
 
-Quadruped, **sim-only spike**. Manifest `robots/go2/robot.yaml`, HAL
-`openral_hal.go2:Go2MujocoHAL`, deploy scene `scenes/deploy/go2_bench.yaml`.
-Normative detail stays in the manifest and `robots/go2/README.md`.
+Quadruped, **sim-only**. Manifest `robots/go2/robot.yaml`, HAL
+`openral_hal.go2:Go2MujocoHAL`. `hal.real` is `null`, so
+`openral deploy run` is refused. There is no `BODY_TWIST` / `cmd_vel`
+contract. **Go2 Edu** extras are undeclared.
 
-`hal.real` is `null`, so `openral deploy run` is refused. There is no
-locomotion controller, so the floating-base twin falls over under
-gravity: the scene and the sim tests run `gravity_enabled=False`. Today
-the twin is a **contract validator**, not a walking robot.
+The twin has a floating base. With no policy it falls under gravity, so
+the HAL default is `gravity_enabled=False`. Two scenes override that:
+
+| Scene | Gravity | Role |
+| --- | --- | --- |
+| `scenes/deploy/go2_bench.yaml` | off | HAL pipe proof (Hub stand, cameras, lifecycle) |
+| `scenes/deploy/go2_walk.yaml` | on + collidable ground, 200 Hz proprio | rsl-rl ONNX locomotion |
+
+The same 12-DoF skill runs on [[entities/go2-z1]] via hold-pad. Dashboard
+PoC: **Load Bare Go2** (already calibrated) → pick skill → Apply; **Go2+Z1**
+asks Recalibrate first, then pick skill → Apply. **Stop** cancels the
+running skill (no e-stop latch) and holds Hub stand so Apply can run again.
+**End Cricket** shuts the GPU session (not Stop, not E-STOP); idle auto-Ends
+after 15 min. See [[concepts/deploy-sim-visualization]].
+
+Normative detail stays in the manifest and `robots/go2/README.md`.
 
 ## Shape
 
@@ -64,7 +77,16 @@ the body. The generated Foxglove layout therefore leads with `top`.
 family (BSD-3-Clause weights, in-process ONNX Runtime, 12-D
 `JOINT_POSITION`); first checkpoint
 `diasAiMaster/unitree-go2-velocity-flat`, aligned to the Hub's trained
-conditions. It is not a VLM and not SmolVLA.
+conditions. It is not a VLM and not SmolVLA. Drive it on `go2_walk`,
+not `go2_bench`. ACM pairs on the walk scene are stand-justified, not
+gait-swept. Demo Apply sends `velocity_commands: [0.35, 0, 0]` for 60 s
+(`max_execution_s`). On that deadline the runner does **not** snap Hub
+stand — `_drain_and_idle_hold` is a short sleep, then
+`Go2MujocoHAL.idle_step` PD-holds the last gait waypoint under gravity.
+A frozen mid-stride pose cannot balance. **Stop** on the demo bar cancels
+the goal *and* snaps Hub stand (no e-stop latch) so Apply can run again.
+Stand / Recalibrate recover a tip while a skill is still running or after
+the 60 s fall. The checkpoint also does not claim MuJoCo gait quality.
 
 ## Undeclared on purpose
 
@@ -79,5 +101,9 @@ tell a Go2 from a G1/H1 on DDS.
 [[analyses/foxglove-web-meshes-need-package-uri]] for why the meshes
 need `package://`, and
 [[analyses/proving-sim-motion-not-a-frozen-stand]] for how to tell a
-real trot from a frozen stand. Operator runbook (cricket host, layout
-generator, `march.sh`): `.agents/skills/go2-foxglove-view/SKILL.md`.
+real trot from a frozen stand. The OTel dashboard always shows `front`
+(main/snout) and `top` (side/3/4), even while WAITING; a laptop
+`:4318` collector proxies those MJPEG tiles from cricket `:14318`.
+Operator runbook (cricket host, layout generator, `march.sh`, start
+failures): `.agents/skills/go2-foxglove-view/SKILL.md`. Append that
+skill on every cricket/dashboard/Foxglove start failure.

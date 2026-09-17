@@ -80,8 +80,9 @@ graph clock origin. Empirically, the idle OpenArm graph (no skill, reasoner
 unable to dispatch — no LLM) streamed cameras (base ~6 Hz, wrists ~1-2 Hz) and
 `/joint_states` at 30 Hz. So the cameras populate Foxglove at idle.
 
-Note: raw uncompressed images are heavy (~9 MB/s/camera); enable image
-compression or fewer cameras on memory-constrained hosts.
+Note: raw uncompressed images are heavy (~9 MB/s/camera). `openral deploy
+sim --foxglove` now republishes `/compressed` and points the generated
+layout there. Standalone `foxglove.launch.py` still defaults to raw.
 
 ## /tf + robot-model rendering (`with_robot_state_publisher`)
 
@@ -103,11 +104,20 @@ ros2 launch openral_foxglove_bringup foxglove.launch.py \
 `/tf` 30 msgs, `/robot_description` 1 msg (15 KB URDF), `/tf_static` 1 msg.
 
 Two caveats:
-- **Meshes:** the example-robot-data panda URDF references
-  `package://example-robot-data/...` meshes, which aren't an ament package on
-  the ROS path, so Foxglove renders link **frames/structure** but not textured
-  meshes. A URDF whose meshes resolve via `package://<ament-pkg>` (served by the
-  bridge's `assets` capability) would show full geometry.
+- **Meshes:** `robot_descriptions` URDFs reference `package://<name>/...`
+  meshes that are not an ament package on the ROS path. Foxglove Studio
+  (browser and desktop) only *requests* `package://` from the bridge —
+  `file://` is read off the machine running Studio, which is the wrong
+  disk when the viewer is on a laptop. `openral deploy` leaves the URDF
+  on `package://` and registers each resolvable package on a throwaway
+  ament prefix (`/tmp/openral_foxglove_ament`) prepended to the bridge's
+  `AMENT_PREFIX_PATH`, so `resource_retriever` can serve the
+  already-licensed meshes. A URDF whose meshes already resolve via
+  `package://<ament-pkg>` is left unchanged (no overlay entry). After the
+  overlay is live, reconnect the websocket (or toggle `/robot_description`)
+  so Studio retries a cached fetch failure. Generated layouts also set
+  `ignoreColladaUpAxis` + `meshUpAxis: z_up` — RViz ignores COLLADA
+  `<up_axis>`, Foxglove honours it, and Go2 otherwise draws on its back.
 - **OpenArm has no local URDF** (`robots/openarm/robot.yaml`:
   `urdf_path` deliberately unset). This feature pairs with robots that resolve a
   URDF — e.g. `franka_panda` / `panda_mobile` (`panda_description`), `ur5e`,

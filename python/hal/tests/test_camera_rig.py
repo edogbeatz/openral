@@ -40,8 +40,13 @@ def test_splices_world_and_body_cameras() -> None:
     body = re.search(r'<body name="gripper">(.*?)</body>', xml, re.DOTALL).group(1)
     assert 'name="wrist"' in body
     assert 'name="front"' not in body
-    # staging added: visual-only floor + fill light.
+    # staging added: visual-only checker floor + skybox + fill light.
     assert "camrig_floor" in xml and "<headlight" in xml
+    assert 'name="camrig_ground"' in xml
+    assert 'name="camrig_skybox"' in xml
+    assert 'builtin="checker"' in xml
+    assert 'type="skybox"' in xml
+    assert 'size="0 0 0.1"' in xml  # infinite plane, not a finite gray patch
     assert 'contype="0"' in xml  # floor must not collide
 
 
@@ -63,6 +68,20 @@ def test_noop_without_sim_placement() -> None:
 def test_unknown_parent_body_raises() -> None:
     with pytest.raises(ROSConfigError, match="nonexistent"):
         rig_cameras_into_mjcf(_BARE, [_rgb("wrist", "nonexistent")])
+
+
+def test_existing_plane_keeps_authored_floor() -> None:
+    """A scene MJCF that already has a plane must not get the camrig floor."""
+    with_floor = _BARE.replace(
+        "<worldbody>",
+        '<asset><texture name="groundplane" type="2d" builtin="checker" '
+        'width="8" height="8"/></asset>\n  <worldbody>\n'
+        '    <geom name="floor" type="plane" size="0 0 0.05"/>',
+    )
+    xml, changed = rig_cameras_into_mjcf(with_floor, [_rgb("front", None)])
+    assert changed
+    assert "camrig_floor" not in xml
+    assert 'name="floor"' in xml
 
 
 def test_fovy_derived_from_intrinsics() -> None:

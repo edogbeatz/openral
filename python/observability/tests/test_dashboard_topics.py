@@ -247,6 +247,30 @@ def test_sensors_read_latest_per_camera_entries_and_thumb_persistence() -> None:
     assert cam["modality"] == "rgb"
 
 
+def test_sse_snapshot_omits_camera_thumbnails() -> None:
+    """Live EventSource must not re-ship JPEGs the MJPEG tiles already stream.
+
+    Two 480x360 q80 thumbs on every telemetry tick is what made a laptop
+    dashboard (port-forwarded from cricket) feel like a slideshow: the
+    browser JSON-parsed tens of KB of base64 30 times a second *and* the
+    MJPEG endpoint still had to decode the same bytes.
+    """
+    store = TelemetryStore()
+    span = _make_span(
+        "sensors.read_latest",
+        attrs={
+            "openral.sensors.source": "cam_top",
+            "openral.sensors.modality": "rgb",
+            "openral.sensors.thumbnail_jpeg_b64": "AAA",
+        },
+    )
+    store.ingest_spans(_wrap([span]))
+    api = store.snapshot()["topics"]["perception"]["cameras"]["cam_top"]
+    sse = store.snapshot(include_camera_thumbs=False)["topics"]["perception"]["cameras"]["cam_top"]
+    assert api["thumbnail_jpeg_b64"] == "AAA"
+    assert "thumbnail_jpeg_b64" not in sse
+
+
 def test_safety_check_ledger_keeps_one_entry_per_check() -> None:
     store = TelemetryStore()
     s1 = _make_span(
@@ -565,6 +589,35 @@ def test_bringup_spans_stay_info() -> None:
     store.ingest_spans(_wrap([_make_span("deploy.bringup")]))
     events = [e for e in store.snapshot()["events"] if e["kind"] == "deploy.bringup"]
     assert events and events[0]["severity"] == "info"
+
+
+def test_sensor_row_names_the_camera() -> None:
+    """A sensors.read_latest row without the source is just a modality.
+
+    Two cameras at 30 Hz collapse to identical titles if the summary only
+    folds modality; with ``openral.sensors.source`` the Event Log can tell
+    front from top even after the UI collapses to one live row per stream.
+    """
+    store = TelemetryStore()
+    store.ingest_spans(
+        _wrap(
+            [
+                _make_span(
+                    "sensors.read_latest",
+                    duration_ms=8.0,
+                    attrs={
+                        "openral.sensors.source": "front",
+                        "openral.sensors.modality": "rgb",
+                    },
+                )
+            ]
+        )
+    )
+    title = next(e for e in store.snapshot()["events"] if e["kind"] == "sensors.read_latest")[
+        "title"
+    ]
+    assert "source=front" in title
+    assert "modality=rgb" in title
 
 
 def test_bringup_row_names_the_node_that_held_the_graph_up() -> None:

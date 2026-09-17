@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import numpy as np
 from openral_core import RobotDescription
-from openral_hal.sim_sensor_bridge import _frame_for_camera, _obs_key_for_sensor
+from openral_hal.sim_sensor_bridge import (
+    _frame_for_camera,
+    _obs_key_for_sensor,
+    _rgb_image_frame_id,
+)
 
 
 def test_franka_sensors_map_to_vla_feature_key_suffix() -> None:
@@ -46,3 +50,28 @@ def test_frame_lookup_falls_back_to_sensor_name() -> None:
 def test_frame_lookup_returns_none_when_absent() -> None:
     images = {"other": np.zeros((2, 2, 3), dtype=np.uint8)}
     assert _frame_for_camera(images, "camera1", "front") is None
+
+
+def test_go2_image_and_camera_info_share_manifest_frame() -> None:
+    """Image and CameraInfo must share the manifest TF frame, not the sensor name.
+
+    Go2's sensor is ``front`` on topic ``/openral/cameras/front/image`` while
+    its TF frame is ``front_camera``. Stamping the Image with ``front`` made
+    Foxglove refuse the attached CameraInfo (``front_camera``) and left the
+    Image panel black.
+    """
+    desc = RobotDescription.from_yaml("robots/go2/robot.yaml")
+    front = next(s for s in desc.sensors if s.name == "front" and s.modality == "rgb")
+    assert front.name == "front"
+    assert front.frame_id == "front_camera"
+    assert _rgb_image_frame_id(front) == "front_camera"
+    assert _rgb_image_frame_id(front) == front.frame_id
+
+
+def test_franka_top_image_uses_manifest_frame() -> None:
+    """Franka's overhead camera is named ``top`` but lives in ``world``."""
+    desc = RobotDescription.from_yaml("robots/franka_panda/robot.yaml")
+    top = next(s for s in desc.sensors if s.name == "top" and s.modality == "rgb")
+    assert top.name == "top"
+    assert top.frame_id == "world"
+    assert _rgb_image_frame_id(top) == "world"

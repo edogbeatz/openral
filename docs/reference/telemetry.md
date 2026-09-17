@@ -484,7 +484,16 @@ only — no safety code changed.
 | `OPENRAL_OTEL_SPAN_SCHEDULE_DELAY_MS` | 30 | `BatchSpanProcessor` flush — ~1.3× the thumbnail rate so the dashboard does not alias |
 | `OPENRAL_ROS2_TRACING` | off | LTTng tracepoints |
 | `OPENRAL_JAEGER_UI_URL` | unset | Enables the trace deep-link in the dashboard header |
-| `OPENRAL_DASHBOARD_WRITE_CONTROLS` | off | Enables `POST /api/skill/execute` and `/api/param/set` |
+| `OPENRAL_DASHBOARD_WRITE_CONTROLS` | off | Enables `POST /api/skill/execute`, `/api/param/set`, and the Go2 demo bar (including Start/End Cricket) |
+| `OPENRAL_CRICKET_IDLE_S` | `900` | Idle auto-End of the cricket GPU session; `0` disables. Running `ExecuteRskill` is not idle. |
+| `OPENRAL_CRICKET_INSTANCE` | `abundant-turquoise-cricket` | Brev workspace name Start/End pass to `brev start` / `brev stop` |
+| `OPENRAL_CRICKET_CONTAINER` | `openral-jazzy-go2` | Docker name on cricket |
+| `OPENRAL_CRICKET_ROLE` | hostname contains `cricket` → `host` | `host` or `laptop`. Laptop Start may `brev start` and open SSH tunnels |
+| `OPENRAL_CRICKET_FOXGLOVE_LOCAL_PORT` | `8765` | Laptop tunnel for Foxglove `ws://127.0.0.1:8765` |
+| `OPENRAL_CRICKET_DASHBOARD_LOCAL_PORT` | `14318` | Laptop tunnel for cricket's `:4318` (this process keeps `:4318`) |
+| `BREV_SSH_CONFIG` | `~/.brev/ssh_config` | SSH config used for cricket tunnels (`ControlMaster=no`) |
+| `OPENRAL_CRICKET_HALT_HOST` | hostname contains `cricket` → on | After the graph dies, halt the VM so billing stops (`0` to leave that to `brev stop` from a laptop) |
+| `OPENRAL_CRICKET_STOP_CMD` | unset | Optional override for the host-stop step (`brev stop` / halt) |
 
 Sampling note: the 0.1 hardware ratio applies to the **CLI process only**. HAL
 and other nodes call `configure_observability()` without a ratio, so their spans

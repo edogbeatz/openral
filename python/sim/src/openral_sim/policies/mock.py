@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import NDArray
+from openral_core.exceptions import ROSConfigError
 
 from openral_sim.registry import POLICIES, SCENES
 from openral_sim.rollout import StepResult
@@ -28,6 +30,7 @@ if TYPE_CHECKING:
 
 _MOCK_ACTION_DIM = 7
 _MOCK_STATE_DIM = 8
+_GO2_LEG_DOF = 12  # Go2 locomotion width; the scripted trot only applies at this DoF.
 
 
 @dataclass
@@ -162,10 +165,10 @@ def _load_controller_json(spec: VLASpec) -> dict[str, Any]:
 class _ZeroPolicy:
     """N-D scripted hold (optional trot). Defaults to zeros when no targets.
 
-    In-tree factory key ``zero``. Used by unit tests and by Acquire's
-    12-DoF Go2 locomotion rSkill (menagerie home + small diagonal trot).
-    Not a learned VLA — ``hold_targets`` / ``gait`` come from
-    ``VLASpec.extra`` (manifest ``policy_extras``) or ``controller.json``.
+    In-tree factory key ``zero``. Used by unit tests and by scripted pose
+    rSkills (Go2+Z1 arm ready). Not a learned VLA — ``hold_targets`` /
+    ``gait`` / named ``poses`` come from ``VLASpec.extra`` (manifest
+    ``policy_extras``) or ``controller.json``.
     """
 
     spec: VLASpec
@@ -176,10 +179,63 @@ class _ZeroPolicy:
     gait_amp: float = 0.0
     gait_hz: float = 1.5
     dt: float = 1.0 / 30.0
+    poses: dict[str, list[float]] = field(default_factory=dict)
+    _default_hold: NDArray[np.float32] | None = None
     _tick: int = field(default=0)
+
+    def __post_init__(self) -> None:
+        if self._default_hold is None and self.hold_targets is not None:
+            self._default_hold = np.array(self.hold_targets, dtype=np.float32, copy=True)
 
     def reset(self) -> None:
         self._tick = 0
+
+    def set_named_pose(self, name: str | None) -> NDArray[np.float32] | None:
+        """Select a named pose from ``poses``, or restore the load-time hold.
+
+        ``name is None`` restores :attr:`_default_hold` (empty
+        ``goal_params_json`` on a resident skill). Unknown names raise.
+        """
+        if name is None:
+            self.hold_targets = (
+                None
+                if self._default_hold is None
+                else np.array(self._default_hold, dtype=np.float32, copy=True)
+            )
+            return self.hold_targets
+        key = str(name).strip().lower()
+        if key not in self.poses:
+            known = ", ".join(sorted(self.poses)) or "(none)"
+            raise ROSConfigError(
+                f"zero policy unknown pose {name!r}; known poses: {known}"
+            )
+        return self.set_arm_targets(self.poses[key])
+
+    def set_arm_targets(self, arm: Sequence[float] | None) -> NDArray[np.float32] | None:
+        """Overlay an arm (or full-width) vector onto the default hold.
+
+        A vector as wide as ``action_dim`` replaces the hold. A shorter
+        vector writes the **trailing** slots (Go2+Z1: 7-D arm+jaw onto
+        19-D) so a locomotion-shaped leading pad stays put.
+        """
+        if arm is None:
+            return self.set_named_pose(None)
+        values = [float(v) for v in arm]
+        base = (
+            np.array(self._default_hold, dtype=np.float32, copy=True)
+            if self._default_hold is not None
+            else np.zeros(self.action_dim, dtype=np.float32)
+        )
+        if len(values) == int(base.shape[0]):
+            self.hold_targets = np.asarray(values, dtype=np.float32)
+            return self.hold_targets
+        if len(values) > int(base.shape[0]):
+            raise ROSConfigError(
+                f"zero policy arm length {len(values)} exceeds action_dim {int(base.shape[0])}"
+            )
+        base[-len(values) :] = np.asarray(values, dtype=np.float32)
+        self.hold_targets = base
+        return self.hold_targets
 
     def step(self, observation: Observation, instruction: str) -> NDArray[np.float32]:
         del observation, instruction
@@ -188,7 +244,7 @@ class _ZeroPolicy:
             action = np.array(self.hold_targets, dtype=np.float32, copy=True)
         else:
             action = np.zeros(self.action_dim, dtype=np.float32)
-        if self.gait == "trot" and self.gait_amp and action.shape[0] >= 12:
+        if self.gait == "trot" and self.gait_amp and action.shape[0] >= _GO2_LEG_DOF:
             phase = 2.0 * math.pi * self.gait_hz * float(self._tick) * self.dt
             delta = float(self.gait_amp) * math.sin(phase)
             action[1] += delta
@@ -296,6 +352,101 @@ def _resolve_hold(
     return targets, gait, gait_amp, gait_hz, dt
 
 
+def _named_poses(raw: object) -> dict[str, list[float]]:
+    """Parse a ``poses: {name: [floats]}`` mapping; skip ill-typed entries."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, list[float]] = {}
+    for name, values in raw.items():
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if not isinstance(values, list) or not values:
+            continue
+        try:
+            out[name.strip().lower()] = [float(v) for v in values]
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _goal_params_mapping(
+    goal_params_json: str | dict[str, object] | None,
+) -> dict[str, object] | None:
+    if goal_params_json is None:
+        return None
+    if isinstance(goal_params_json, dict):
+        return goal_params_json
+    text = str(goal_params_json).strip()
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ROSConfigError(f"zero policy goal_params_json is not JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ROSConfigError(
+            f"zero policy goal_params_json must be an object, got {type(parsed).__name__}"
+        )
+    return parsed
+
+
+def apply_zero_pose_override(
+    target: object,
+    goal_params_json: str | dict[str, object] | None,
+) -> NDArray[np.float32] | None:
+    """Push a named / explicit arm pose onto a ``zero`` adapter.
+
+    Looks for ``set_named_pose`` / ``set_arm_targets`` on ``target`` or
+    ``target._adapter``. Empty payload restores the load-time hold. A 7-D
+    ``arm`` vector wins over ``pose``. No-ops when the adapter is not a
+    scripted hold (so the runner can call this next to the rsl-rl joystick
+    override).
+
+    Example:
+        >>> class _Stub:
+        ...     def set_named_pose(self, name):
+        ...         self.pose = name
+        ...         return None
+        ...     def set_arm_targets(self, arm):
+        ...         self.arm = list(arm)
+        ...         return None
+        >>> stub = _Stub()
+        >>> apply_zero_pose_override(stub, {"pose": "ready"})
+        >>> stub.pose
+        'ready'
+    """
+    setter_pose = getattr(target, "set_named_pose", None)
+    setter_arm = getattr(target, "set_arm_targets", None)
+    if setter_pose is None:
+        nested = getattr(target, "_adapter", None)
+        setter_pose = getattr(nested, "set_named_pose", None)
+        setter_arm = getattr(nested, "set_arm_targets", None)
+    extra = _goal_params_mapping(goal_params_json)
+    result: NDArray[np.float32] | None = None
+    if extra is None or (extra.get("arm") is None and extra.get("pose") is None):
+        if callable(setter_pose):
+            result = setter_pose(None)
+    elif extra.get("arm") is not None:
+        if not callable(setter_arm):
+            result = None
+        elif not isinstance(extra["arm"], list):
+            raise ROSConfigError(
+                f"zero policy goal_params.arm must be a list, got {extra['arm']!r}"
+            )
+        else:
+            result = setter_arm(extra["arm"])
+    elif extra.get("pose") is not None:
+        if not callable(setter_pose):
+            result = None
+        elif not isinstance(extra["pose"], str):
+            raise ROSConfigError(
+                f"zero policy goal_params.pose must be a string, got {extra['pose']!r}"
+            )
+        else:
+            result = setter_pose(extra["pose"])
+    return result
+
+
 @POLICIES.register("zero")
 def _build_zero_policy(env_cfg: SimEnvironment) -> _ZeroPolicy:
     action_dim = _resolve_action_dim(env_cfg)
@@ -306,7 +457,10 @@ def _build_zero_policy(env_cfg: SimEnvironment) -> _ZeroPolicy:
     hold, gait, gait_amp, gait_hz, dt = _resolve_hold(env_cfg, action_dim)
     if hold is not None:
         action_dim = int(hold.shape[0])
-    return _ZeroPolicy(
+    poses = _named_poses(extra.get("poses"))
+    if not poses:
+        poses = _named_poses(file_cfg.get("poses"))
+    policy = _ZeroPolicy(
         spec=env_cfg.vla,
         device="cpu",
         action_dim=action_dim,
@@ -315,7 +469,17 @@ def _build_zero_policy(env_cfg: SimEnvironment) -> _ZeroPolicy:
         gait_amp=gait_amp,
         gait_hz=gait_hz,
         dt=dt,
+        poses=poses,
     )
+    default_pose = extra.get("default_pose") or file_cfg.get("default_pose")
+    if isinstance(default_pose, str) and default_pose.strip() and poses:
+        policy.set_named_pose(default_pose)
+        policy._default_hold = (
+            None
+            if policy.hold_targets is None
+            else np.array(policy.hold_targets, dtype=np.float32, copy=True)
+        )
+    return policy
 
 
 @POLICIES.register("random")

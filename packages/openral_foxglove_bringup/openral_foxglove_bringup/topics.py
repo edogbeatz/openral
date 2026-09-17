@@ -133,9 +133,21 @@ BUCKET1_TOPIC_WHITELIST: list[str] = [
 #: thing standing between a connected viewer and the deploy host's filesystem,
 #: and ``..`` must stay unreachable however the rest of the pattern relaxes.
 #: The extension set is upstream's, unchanged.
+#: Mesh filename extensions the bridge may serve. Upstream's set, unchanged.
+_ASSET_EXTENSIONS = (
+    r"dae|fbx|glb|gltf|jpeg|jpg|mtl|obj|png|stl|tif|tiff|urdf|webp|xacro"
+)
+
 ASSET_URI_ALLOWLIST: list[str] = [
     r"^package://(?!.*\.\.)(?:[-\w%.]+/)*[-\w%.]+"
-    r"\.(?:dae|fbx|glb|gltf|jpeg|jpg|mtl|obj|png|stl|tif|tiff|urdf|webp|xacro)$",
+    rf"\.(?:{_ASSET_EXTENSIONS})$",
+    # URDFs that already stamp ``file://`` (RViz helpers, older deploys).
+    # Studio's web client does not request these from the bridge — it
+    # only asks for ``package://``. ``prepare_foxglove_mesh_overlay``
+    # keeps those URIs and registers the package on an ament prefix
+    # instead. Same traversal refusal and extension set as package://.
+    r"^file://(?!.*\.\.)(?:/[-\w%.]+)+"
+    rf"\.(?:{_ASSET_EXTENSIONS})$",
 ]
 
 READ_ONLY_CAPABILITIES: list[str] = ["connectionGraph", "assets"]

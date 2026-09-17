@@ -301,6 +301,18 @@ _ROBOT_HAL_REGISTRY: dict[str, _HalSpec] = {
         # posture as g1. An env-only DeployScene must not scene-attach.
         bare_twin_sim=True,
     ),
+    # Go2 + Z1 composite: same lifecycle node as bare go2 (manifest-driven
+    # build_hal → Go2Z1MujocoHAL). Joint order keeps the 12 legs first so the
+    # rsl-rl Go2 locomotion skill hold-pads onto the arm.
+    "go2_z1": _HalSpec(
+        package="openral_hal_go2",
+        executable="lifecycle_node.py",
+        node_name="openral_hal_go2",
+        supported_robot_names=frozenset({"go2_z1"}),
+        default_params={},
+        manifest_driven=True,
+        bare_twin_sim=True,
+    ),
     "rizon4": _HalSpec(
         package="openral_hal_rizon4",
         executable="lifecycle_node.py",
@@ -1810,6 +1822,9 @@ def run_launch_invocation(invocation: LaunchInvocation, *, run_preflight: bool =
         _console.print(f"  hal_params_tmp:{hal_params_tmp.name}")
         _console.print(f"  argv: {shlex.join(argv)}")
         venv_env = _prepare_launch_env(hal_mode=invocation.hal_mode)
+        # Dashboard demo Stand / Recalibrate target ``/openral/<id>/reset_to_pose``.
+        venv_env["OPENRAL_ROBOT_ID"] = invocation.robot_id
+        venv_env.setdefault("OPENRAL_REPO_ROOT", str(_repo_root_from(Path(__file__))))
         # Both directions, one rule: a sim must not start beside a robot and a
         # robot must not start beside a sim (#227). Checked against the scope
         # actually about to be used, so a confined sim sees the empty graph it
@@ -2192,12 +2207,13 @@ def _apply_rmw_default(env: dict[str, str]) -> None:
     bind with ``[RTPS_TRANSPORT_SHM Error] Failed init_port
     fastrtps_port7000: open_and_lock_file failed`` — breaking every
     subsequent ``openral deploy sim`` until the operator manually
-    cleans them. CLAUDE.md §2 names Cyclone as the OpenRAL default,
-    but the launch_ros lifecycle_event_manager in Jazzy has a
+    cleans them. CLAUDE.md §2 names Fast DDS as the host/CLI default
+    because the launch_ros lifecycle_event_manager in Jazzy has a
     sharp edge with Cyclone (deserialisation race on the
     auto-CONFIGURE → ACTIVATE chain) that takes down the
     prompt_router; until that's resolved we stay on Fast-DDS and
-    aggressively clean its stale state.
+    aggressively clean its stale state. Container images set
+    Cyclone via ``RMW_IMPLEMENTATION``.
 
     Best-effort: only files owned by the calling user are
     unlinked — other users' SHM segments are silently skipped.

@@ -41,6 +41,7 @@ from openral_core.exceptions import (
 )
 from openral_core.schemas import (
     Action,
+    AttachedCollisionObject,
     ClockAuthority,
     ControlMode,
     GripperReadMode,
@@ -51,6 +52,7 @@ from openral_core.schemas import (
 )
 
 from openral_hal._base import HALBase
+from openral_hal._mujoco_attached import resolve_attached_mujoco_bodies
 
 if TYPE_CHECKING:
     import mujoco
@@ -239,6 +241,13 @@ class MujocoArmHAL(HALBase):
         self._render_failed: bool = False
         self._mjcf_cameras: set[str] = set()
         self._render_missing_warned: set[str] = set()
+        # Empty-or-grasped attachment snapshot so SimSensorBridge can heartbeat
+        # /openral/attachment_state. Without this, robots with end_effectors
+        # enable the kernel's attached-collision gate but never refresh the
+        # empty-seed stamp → attached_unavailable after ~5 s and JOINT_POSITION
+        # chunks are dropped (go2_z1 walk "moves a bit" then freezes).
+        self._attached_objects: dict[str, AttachedCollisionObject] = {}
+        self._attached_body_ids: frozenset[int] = frozenset()
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -329,7 +338,38 @@ class MujocoArmHAL(HALBase):
         self._renderers.clear()
         self._model = None
         self._data = None
+        self._attached_objects = {}
+        self._attached_body_ids = frozenset()
         self._connected = False
+
+    def update_attached_objects(self, objects: list[AttachedCollisionObject]) -> None:
+        """Atomically replace attached objects and resolve their MuJoCo bodies.
+
+        Same contract as ``SimAttachedHAL.update_attached_objects`` so
+        ``SimSensorBridge`` heartbeats an empty-or-grasped
+        ``/openral/attachment_state`` for bare twins with grippers
+        (go2_z1, so101, …). Preserves the previous snapshot on failure.
+
+        Args:
+            objects: Complete current attachment set.
+
+        Raises:
+            ROSConfigError: On duplicate ids, malformed evidence refs, or
+                unknown body names.
+        """
+        by_id, body_ids = resolve_attached_mujoco_bodies(
+            objects, handles=self.mujoco_handles()
+        )
+        self._attached_objects = by_id
+        self._attached_body_ids = body_ids
+
+    def read_attached_objects(self) -> list[AttachedCollisionObject]:
+        """Return the current attachment snapshot in stable object-id order."""
+        return [self._attached_objects[key] for key in sorted(self._attached_objects)]
+
+    def read_attached_body_ids(self) -> frozenset[int]:
+        """Return exact MuJoCo payload body ids excluded from world perception."""
+        return self._attached_body_ids
 
     def mujoco_handles(self) -> tuple[Any, Any] | None:
         """Expose the live MuJoCo ``(model, data)`` for the bare-twin arm.

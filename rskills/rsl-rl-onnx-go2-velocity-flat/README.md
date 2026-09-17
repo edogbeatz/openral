@@ -56,8 +56,9 @@ model.
 
 ## Supported robots / embodiments
 
-`embodiment_tags: [go2]`. Joint order on the OpenRAL HAL is menagerie
+`embodiment_tags: [go2, go2_z1]`. Joint order on the OpenRAL HAL is menagerie
 **FL, FR, RL, RR** × hip / thigh / calf (`robots/go2`, `Go2MujocoHAL`).
+On `go2_z1` the same 12-D action is hold-padded to 19-D (arm frozen at the sticky Recalibrate / `arm_ready` pose).
 `params/deploy.yaml` `joint_ids_map: [3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8]`
 is applied inside the adapter (policy slot → robot index). Do not invent
 a second remap.
@@ -125,7 +126,10 @@ projected gravity `[0, 0, −1]` and zero angular velocity.
 
 `scenes/deploy/go2_bench.yaml` still boots with **gravity off** — it is a
 12-DoF HAL pipe proof, not a walking scene. Success criterion is load +
-correct 45-D obs sources + 12-D emit, **not** gait quality.
+correct 45-D obs sources + 12-D emit, **not** gait quality. For a
+gravity-on locomotion bench use `scenes/deploy/go2_walk.yaml` (or
+`go2_z1_walk.yaml` for the composite). ACM on those walk scenes is
+stand-justified, not gait-swept.
 
 Hub `deploy.yaml` PD (`stiffness` `[20, 20, 40]`, `damping` `[1, 1, 2]` per
 hip/thigh/calf) is **not** applied. HAL software PD stays

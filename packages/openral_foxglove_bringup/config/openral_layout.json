@@ -5,7 +5,9 @@
    "scene": {
     "transforms": {
      "showLabel": false
-    }
+    },
+    "ignoreColladaUpAxis": true,
+    "meshUpAxis": "z_up"
    },
    "cameraState": {
     "perspective": true,
@@ -56,17 +58,20 @@
   },
   "Image!cam_0": {
    "imageMode": {
-    "imageTopic": "/openral/cameras/top/image"
+    "imageTopic": "/openral/cameras/top/image",
+    "calibrationTopic": "/openral/cameras/top/camera_info"
    }
   },
   "Image!cam_1": {
    "imageMode": {
-    "imageTopic": "/openral/cameras/wrist_left/image"
+    "imageTopic": "/openral/cameras/wrist_left/image",
+    "calibrationTopic": "/openral/cameras/wrist_left/camera_info"
    }
   },
   "Image!cam_2": {
    "imageMode": {
-    "imageTopic": "/openral/cameras/wrist_right/image"
+    "imageTopic": "/openral/cameras/wrist_right/image",
+    "calibrationTopic": "/openral/cameras/wrist_right/camera_info"
    }
   },
   "3D!nav": {
@@ -106,7 +111,10 @@
   },
   "3D!bucket2": {
    "followTf": "base_link",
-   "scene": {},
+   "scene": {
+    "ignoreColladaUpAxis": true,
+    "meshUpAxis": "z_up"
+   },
    "cameraState": {
     "perspective": true,
     "distance": 4,

@@ -141,7 +141,7 @@ def test_detections_reach_the_snapshot_with_every_ui_key() -> None:
     assert set(det) == _DETECTION_UI_KEYS
     assert det["model_id"] == _MODEL_ID
     # Source-frame dimensions are load-bearing: the tile displays an
-    # aspect-preserving 320x240 THUMBNAIL of a 640x480 frame, so the renderer
+    # aspect-preserving 480x360 THUMBNAIL of a 640x480 frame, so the renderer
     # scales by ratio. Without these the boxes would be drawn at source pixel
     # offsets on a half-size image — visibly plausible and wrong.
     assert det["frame_width"] == 640
@@ -389,7 +389,11 @@ async def test_app_starts_without_an_overlay_subscriber() -> None:
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/api/state")
     assert resp.status_code == 200
-    assert resp.json()["topics"]["perception"] == {}
+    perception = resp.json()["topics"]["perception"]
+    assert "overlays" not in perception
+    cameras = perception["cameras"]
+    assert cameras["front"]["role"] == "main"
+    assert cameras["top"]["role"] == "side"
 
 
 # --------------------------------------------------------------------------

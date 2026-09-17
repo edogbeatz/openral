@@ -1,0 +1,98 @@
+# rSkill manifest — scripted Go2+Z1 arm ready pose
+# Adapter: openral_sim.policies.mock  (model_family: zero)
+#
+# No learned weights. Emits a 19-D JOINT_POSITION hold: Hub stand for the
+# 12 Go2 legs + a named Z1 pose (default `ready`). kind stays `vla` so
+# execute_rskill / make_policy dispatch through the existing family token.
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-zero-go2_z1-arm_ready-fp32"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "vla"
+model_family: "zero"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+embodiment_tags:
+  - "go2_z1"
+
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+# Numpy scripted hold — no torch. Schema has no "numpy" runtime; pytorch is
+# the declared default and the adapter never loads a graph.
+runtime: "pytorch"
+quantization:
+  dtype: "fp32"
+  backend: "pytorch"
+weights_uri: "local://rskills/rskill-zero-go2_z1-arm_ready-fp32"
+
+# ── Execution semantics ────────────────────────────────────────────────────
+chunk_size: 1
+latency_budget:
+  per_chunk_ms: 20.0
+  max_execution_s: 10.0
+
+# Finite horizon so ExecuteRskill succeeds after holding the pose (VLAs
+# otherwise run until deadline abort). See openral_rskill_ros.scripted_horizon.
+policy_extras:
+  action_dim: 19
+  gait: "hold"
+  horizon_s: 2.0
+  default_pose: "ready"
+  hold_targets: [-0.1, 0.9, -1.8, 0.1, 0.9, -1.8, -0.1, 0.9, -1.8, 0.1, 0.9, -1.8, 0.0, 1.2, -1.0, -0.4, 0.0, 0.0, 0.0]
+  poses:
+    ready: [0.0, 1.2, -1.0, -0.4, 0.0, 0.0, 0.0]
+    home: [0.0, 0.785, -0.261, -0.523, 0.0, 0.0, 0.0]
+    fold: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+goal_params_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    pose:
+      type: string
+      enum: [ready, home, fold]
+      description: >
+        Named Z1 pose. `ready` is the default reach pose (visible from
+        menagerie home). `home` is menagerie z1_gripper.xml home. `fold`
+        is all-zero servos. Legs stay on the Hub stand.
+    arm:
+      type: array
+      minItems: 7
+      maxItems: 7
+      items:
+        type: number
+      description: >
+        Explicit 7-D Z1 targets (joint1..joint6 + jaw, radians). Wins over
+        `pose` when both are set.
+
+# Episode reset: Hub stand + menagerie arm home, so the default `ready`
+# execute is a visible unfold rather than a hold of an already-ready arm.
+starting_pose: [-0.1, 0.9, -1.8, 0.1, 0.9, -1.8, -0.1, 0.9, -1.8, 0.1, 0.9, -1.8, 0.0, 0.785, -0.261, -0.523, 0.0, 0.0, 0.0]
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+paper_url: "https://github.com/google-deepmind/mujoco_menagerie/tree/main/unitree_z1"
+
+description: >
+  Scripted 19-D joint-position hold for Unitree Go2 + Z1: Hub-stand the
+  legs and drive the Z1 to a named pose (default ready). Turns the arm
+  servos on and parks them; not a learned manipulator. Override pose via
+  execute_rskill goal_params_json.
+
+actions:
+  - "reach"
+objects:
+  - "arm"
+scenes:
+  - "flat"
+
+action_contract:
+  dim: 19
+  representation: "joint_positions"
+  joint_units: "radians"

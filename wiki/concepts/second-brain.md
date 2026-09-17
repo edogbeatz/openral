@@ -1,7 +1,7 @@
 ---
 type: concept
 tags: [openral, wiki, workflow]
-updated: 2026-09-16
+updated: 2026-09-17
 ---
 
 # Second brain
@@ -22,8 +22,9 @@ cited in place. They are not copied into `raw/` unless someone asks.
 ## What compounds
 
 New sources update several pages, strengthen `[[wikilinks]]`, and record
-contradictions. That is the point. A chat answer that is not filed
-disappears.
+contradictions. Finished work is filed the same way: patch the home
+pages and append `wiki/log.md` (skill **Done / finish**). A chat answer
+that is not filed disappears. Do not ask whether to file.
 
 ## What this is not
 

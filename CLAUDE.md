@@ -8,7 +8,7 @@
 > - Glossary → [`docs/reference/glossary.md`](docs/reference/glossary.md).
 > - Releasing → [`docs/contributing/releasing.md`](docs/contributing/releasing.md). **One lockstep SemVer across root + all `python/*`; the bump is computed from Conventional Commits by release-please. Never hand-edit a `version =` field or an `openral-*==` pin — they are rewritten in the release PR.**
 > - Public-symbol inventory → [`docs/METHODS.md`](docs/METHODS.md) index + per-layer files in [`docs/methods/`](docs/methods/). **`grep -rn <symbol> docs/methods/` before adding a helper.**
-> - Agent-tool entry points → [`AGENTS.md`](AGENTS.md) is the tool-neutral root pointer (Cursor / Codex / Copilot / Aider read it) and **redirects here**; keep it a 3-line pointer, never a copy or symlink of this file. Vendor-neutral skills live in [`.agents/skills/`](.agents/skills/) (`SKILL.md` + `references/`). `AGENTS.md` itself stays at repo root — it does **not** belong under `.agents/`.
+> - Agent-tool entry points → [`AGENTS.md`](AGENTS.md) is the tool-neutral root pointer (Cursor / Codex / Copilot / Aider read it) and **redirects here**; keep it a 3-line pointer, never a copy or symlink of this file. Vendor-neutral skills live in [`.agents/skills/`](.agents/skills/) (`SKILL.md` + `references/`). `AGENTS.md` itself stays at repo root — it does **not** belong under `.agents/`. **Close-out:** every finished task updates `wiki/` and appends `wiki/log.md` (skill [`.agents/skills/openral-wiki/SKILL.md`](.agents/skills/openral-wiki/SKILL.md)); chat is not project memory.
 > - Design decisions (ADRs) → [`docs/decisions.md`](docs/decisions.md); the ADR log itself lives in the private `OpenRAL/management` repo.
 
 ---
@@ -92,6 +92,7 @@ Re-read this file if >1 day or >1 PR since last; check [`docs/decisions.md`](doc
 7. **Update docs in the same PR** (§1.14).
 8. **Conventional Commits** (`feat(skill): …`, `fix(safety): …`). Squash on merge only when the branch is a single logical change. The type is load-bearing: it decides the next release's SemVer segment (`fix` → patch, `feat` → minor, `!`/`BREAKING CHANGE:` → minor while <1.0) and whether the change reaches `CHANGELOG.md` — `docs/test/style/ci/build/chore` are silent on both counts.
 9. **Run full local CI** before pushing: `just lint && just test && just sim` (where applicable).
+10. **File the work in the wiki** — update the pages the change touched, refresh `wiki/index.md` if the catalog changed, append `wiki/log.md`. Follow [`.agents/skills/openral-wiki/SKILL.md`](.agents/skills/openral-wiki/SKILL.md) **Done / finish**. No log entry, the task is not done.
 
 ### 4.3 Repo state map
 
@@ -105,6 +106,7 @@ Re-read this file if >1 day or >1 PR since last; check [`docs/decisions.md`](doc
 - [ ] Tests: unit + integration + sim where applicable; HIL if a HAL changed. No new mocks/stubs/smoke tests (§1.11).
 - [ ] The matching `docs/methods/` file updated for every added/renamed/removed/moved public symbol (signature + line number + layer section); `tools/refresh_methods_linenos.py --check` clean. Searched first.
 - [ ] Docs updated in the same PR (READMEs, `docs/`, ADRs) — no follow-up deferrals.
+- [ ] Wiki close-out: touched `wiki/` pages updated; `wiki/log.md` has a parseable entry (skill `openral-wiki`).
 - [ ] Pre-existing errors fixed in a separate prior `fix(...)` commit.
 - [ ] Repo state map updated when a module is added/renamed/removed/status-flipped.
 - [ ] `just lint` passes; `mypy --strict` clean; no new `# type: ignore` without `# reason: ...`; no new `try/except: pass`; no new global mutable state.

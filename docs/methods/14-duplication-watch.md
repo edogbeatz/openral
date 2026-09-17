@@ -457,6 +457,9 @@ contributor should look at before adding similar code.
   `SO100MujocoHAL`, `Rizon4MujocoHAL`, `G1MujocoHAL`, `H1MujocoHAL`,
   `Go2MujocoHAL`,
   `AlohaMujocoHAL`, `OpenArmMujocoHAL` all extend `MujocoArmHAL`.
+  Attachment body resolution for both `MujocoArmHAL` and
+  `SimAttachedHAL` lives in `openral_hal._mujoco_attached.resolve_attached_mujoco_bodies`
+  — do not re-copy the `mujoco_body:` walk.
   Following the bimanual amendment and the 2026-05
   cleanup that collapsed each subclass `__init__` into a single
   forward to `MujocoArmHAL._init_from_description(<DESCRIPTION>, …)`),
@@ -485,8 +488,11 @@ contributor should look at before adding similar code.
   their `_per_step_update` torque hook (default no-op in `MujocoArmHAL`,
   overridden to recompute `tau = kp*(target-q) - kv*dq` every
   step) — that PD behavior is a Unitree torque-motor substitute, not
-  arm-data, and stays in code. Go2 is the first quadruped sibling; do
-  not invent a second PD helper until a third torque-MJCF robot lands.
+  arm-data, and stays in code. Go2 also overrides `idle_step` /
+  `reset_to_pose` / `send_action` to PD-hold `_hold_targets` because the
+  base idle stepper leaves `ctrl` untouched (correct for position
+  actuators; a constant-N·m fold on `<motor>`). Reuse `_per_step_update`;
+  do not invent a second PD helper until a third torque-MJCF robot lands.
 - **Policy adapter loader seams — *resolved.*** The 2026-05 cleanup
   pulled three parallel copies of `_load_manifest_for_spec` (one each
   in `policies/smolvla.py`, `policies/rldx.py`, `policies/pi05.py`)
@@ -898,3 +904,24 @@ pattern in `tools/schema_export.py`.*
     silent drift would re-argue the lever on a wrong number.
     `test_the_quantisation_gain_matches_the_matrix_budget_it_is_derived_from`
     pins it.
+44. **URDF mesh URI rewrite — three directions, do not merge.**
+    `openral_foxglove_bringup.mesh_uris.prepare_foxglove_mesh_overlay`
+    leaves `package://` in place and registers the share as an ament
+    prefix so Studio's web client can fetch via the bridge (it will not
+    request `file://`). `openral_cli.robot._portable_mesh_refs` does the
+    opposite (cache-absolute → portable `rd:` refs) for committed URDFs.
+    `tools/viz_collision.py` rewrites a scene-local `assets/` prefix to
+    `file://` for RViz. Same problem family, three callers, three
+    grammars — extend the Foxglove helper, do not import the CLI vendor
+    path into deploy.
+45. **Short `JOINT_POSITION` → full DoF — two pads, different layers.**
+    `openral_rskill_ros._hold_pad.hold_pad_joint_targets` is the runner
+    contract (leading policy values + proprio hold, clamped to joint
+    limits so a normalised gripper cannot trip `kind_workspace`).
+    `Go2Z1MujocoHAL._expand_leg_only_targets` is defense in depth on
+    the HAL (cannot import the ROS package): 12-D locomotion rows and
+    hold-padded 19-D walk rows (legs off Hub stand) still freeze the
+    sticky arm hold; a full 19-D Hub-stand row is the arm-command path
+    (`arm_ready` / Recalibrate) and updates that hold. Zero-filling the
+    pad folds Z1 position servos to 0. Do not invent a third helper, and
+    do not import `_hold_pad` into `python/hal/`.

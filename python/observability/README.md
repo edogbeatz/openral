@@ -14,6 +14,16 @@ eight-layer model in the project docs.
 > All OpenRAL workspace packages move in lockstep at `0.1.x` until the first
 > public release.
 
+## Connection freshness (host clock)
+
+The dashboard header pill (`live` / `stale` / `dead`) is OTLP ingest age
+on the **dashboard host**: `now_unix - last_ingest_ts` from the snapshot,
+not "is the browser's EventSource up" and not `Date.now()`. A laptop
+viewing a port-forwarded remote `:4318` is often ≥60 s off the VM, which
+used to freeze the pill on `DEAD (1m)` while spans were still landing.
+The same host-clock age drives every per-card status dot. See
+[`docs/quickstart/dashboard.md`](../../docs/quickstart/dashboard.md).
+
 ## Voice prompt (local speech-to-text)
 
 The live dashboard's operator-prompt box has a mic button. Click it and the
@@ -82,12 +92,16 @@ GET /api/camera/{source}/stream
 
 This endpoint re-serves the per-camera OTLP thumbnail JPEG as a continuous
 `multipart/x-mixed-replace` MJPEG stream — the same thumbnails that already
-flow in via the `sensors.read_latest` span attribute `thumbnail_jpeg_b64`. No
-extra camera pipeline is needed. The frame rate is bounded by how often the
-workload exports spans (configured via `OPENRAL_OTEL_SPAN_SCHEDULE_DELAY_MS`,
-default 30 ms ≈ 33 Hz). The endpoint returns 404 only when the source name is
-entirely unknown to the store; a known camera that has not yet emitted a frame
-opens the stream and waits.
+flow in via the `sensors.read_latest` span attribute `thumbnail_jpeg_b64`.
+Sim HAL cameras emit those spans at the camera timer (capped 25 Hz); the
+EventSource snapshot omits the JPEG so a 30 Hz telemetry tick does not
+re-parse two base64 thumbs. No extra camera pipeline is needed. Go2 hero
+slots `front` (main/snout) and `top` (side/3/4) are always known, so the
+page mounts two labeled panels while WAITING and the stream waits for a
+frame. A laptop dashboard with no local OTLP follows cricket's tunneled
+dashboard (`http://127.0.0.1:14318/api/camera/{source}/stream`) so this
+`:4318` page shows the same two pictures. 404 only for a name that is
+not a hero slot and has never been ingested.
 
 ## Perception overlays on the camera tiles
 
@@ -131,7 +145,7 @@ producer's area-ascending order.
 Three properties worth knowing:
 
 * **Coordinates are source-image pixels**, and the tile shows an
-  aspect-preserving 320×240 thumbnail under `object-fit: cover`. The renderer
+  aspect-preserving 480×360 thumbnail under `object-fit: cover`. The renderer
   maps through the cover transform using the overlay's own `frame_width` /
   `frame_height`, so boxes track the displayed size rather than sitting at a
   constant offset from what they describe.
@@ -206,6 +220,19 @@ POST /api/skill/execute   # dispatch an ExecuteRskill action goal (returns 202 o
 POST /api/param/set       # tune a non-safety ROS 2 parameter via ros2 param set
 ```
 
+Plus the Go2 **demo** bar (same gate):
+
+```
+POST /api/demo/stand | recalibrate   # e-stop clear + ResetToPose (Go2+Z1 parks Z1 at arm-ready)
+POST /api/demo/walk                  # apply rsl-rl velocity walk (when that skill is selected)
+POST /api/demo/stop                  # cancel ExecuteRskill (no e-stop latch) + Hub stand
+POST /api/demo/load                  # cold-reload Bare Go2 (auto-stand) / Go2+Z1 (Recalibrate next)
+GET  /api/demo/cricket               # idle remaining; occupancy; does not reset the timer
+POST /api/demo/cricket/touch         # dashboard interaction — reset idle
+POST /api/demo/cricket/start         # laptop: brev start + tunnels + attach; already-running is success
+POST /api/demo/cricket/end           # cancel skill, stop graph, stop Brev host (not E-STOP; not Stop)
+```
+
 `POST /api/skill/execute` returns **HTTP 202** as soon as the action server
 accepts the goal — it does **not** block on skill completion. The response body
 includes `goal_id` for telemetry correlation. Execution progress is tracked via
@@ -222,8 +249,40 @@ The dashboard prints a loud `WARNING:` banner to stderr on startup when the
 flag is on. The flag is also surfaced in `GET /api/config`:
 
 ```json
-{"jaeger_ui_url": "...", "write_controls_enabled": true}
+{"jaeger_ui_url": "...", "write_controls_enabled": true,
+ "demo_controls_enabled": true, "demo_presets": [{"id":"go2","label":"Bare Go2",
+ "resume":"stand","story":"bare"}, {"id":"go2_z1","label":"Go2 + Z1",
+ "resume":"","story":"armed"}], "robot_embodiment_tags": ["go2_z1","go2",...],
+ "walk_skill_ids": ["Acquire/rskill-rsl-rl-onnx-go2-velocity-flat",
+ "OpenRAL/rskill-rsl_rl_onnx-go2-velocity_flat-fp32"],
+ "cricket": {"instance":"abundant-turquoise-cricket","idle_timeout_s":900,
+  "can_start_from_cold":true, "role":"laptop",
+  "foxglove_url":"ws://127.0.0.1:8765",
+  "cricket_dashboard_url":"http://127.0.0.1:14318/"}}
 ```
+
+The page reads that flag to decide whether to render the stepped **demo**
+wizard. Bare Go2 (`resume=stand`) auto-calibrates after reload and lands on
+select skill + Apply; Go2+Z1 (`story=armed`) asks for Recalibrate first.
+Neither auto-walks. The last selected skill id is remembered per robot. The
+skill picker is fed by the read-only
+`GET /api/skills`, which indexes
+`rskills/*/rskill.yaml` via `openral_rskill.loader.discover_intree_rskills` and
+reports each manifest's `name` — the id the skill_runner's in-tree resolver
+looks up — so a pick always resolves. Apply on the walk skill uses
+`POST /api/demo/walk` (`velocity_commands: [0.35, 0, 0]`); every other pick
+POSTs `/api/skill/execute` with blank goal params (manifest defaults). **Stop**
+cancels that goal via `/openral/execute_rskill/_action/cancel_goal` and snaps
+Hub stand — it does not latch e-stop. **Start Cricket** / **End Cricket** sit
+on the same bar: a laptop Start `brev start`s a stopped box, opens SSH
+tunnels (Foxglove `:8765`, cricket dashboard `:14318`), and attaches the
+graph (already-running is a success, not a relaunch); End cancels the skill
+then stops the graph and `brev stop`s the host so GPU billing stops.
+Idle auto-Ends after `OPENRAL_CRICKET_IDLE_S` (default 15 min) unless a skill
+is running or the operator is using the page. The separate **Run skill** strip stays
+hidden while the demo bar is shown. With the
+flag off there is no bar, because the endpoints behind it answer 403. See
+[`docs/quickstart/dashboard.md`](../../docs/quickstart/dashboard.md#running-a-skill-from-the-page).
 
 **Safety posture:**
 

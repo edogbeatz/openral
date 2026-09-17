@@ -24,6 +24,15 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 
+@pytest.fixture(autouse=True)
+def _cricket_role_defaults_to_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep existing dashboard tests on the cricket-host Start path.
+
+    Laptop Start SSHes to Brev; unit tests must opt into that role explicitly.
+    """
+    monkeypatch.setenv("OPENRAL_CRICKET_ROLE", "host")
+
+
 @pytest.fixture
 def av() -> Callable[[object], AnyValue]:
     """Return the OTLP ``AnyValue`` converter shared by the dashboard tests."""

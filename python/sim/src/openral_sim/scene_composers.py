@@ -228,6 +228,30 @@ def _merge_section(base_root: ET.Element, arm_root: ET.Element, tag: str) -> Non
         base_section.append(child)
 
 
+def _scale_subtree_inertial(root: ET.Element, scale: float) -> None:
+    """Multiply every ``<inertial>`` mass / inertia under ``root`` by ``scale``.
+
+    Used so a locomotion policy trained on the bare carrier can stay upright
+    with a visually-present arm whose full menagerie mass would tip it. Meshes
+    and kinematics are unchanged — only the dynamic payload.
+    """
+    for body in root.iter("body"):
+        inertial = body.find("inertial")
+        if inertial is None:
+            continue
+        mass = inertial.get("mass")
+        if mass is not None:
+            inertial.set("mass", f"{float(mass) * scale:g}")
+        diag = inertial.get("diaginertia")
+        if diag is not None:
+            vals = [float(x) * scale for x in diag.split()]
+            inertial.set("diaginertia", " ".join(f"{v:g}" for v in vals))
+        full = inertial.get("fullinertia")
+        if full is not None:
+            vals = [float(x) * scale for x in full.split()]
+            inertial.set("fullinertia", " ".join(f"{v:g}" for v in vals))
+
+
 def compose_mounted_arm_mjcf(
     *,
     base_mjcf_ref: str,
@@ -238,6 +262,7 @@ def compose_mounted_arm_mjcf(
     mount_quat: tuple[float, float, float, float] | None = None,
     class_prefix: str = "arm__",
     ground: bool = True,
+    arm_mass_scale: float = 1.0,
 ) -> tuple[str, Path]:
     """Bolt an arm MJCF onto a body of a base-robot MJCF; return ``(xml, meshdir)``.
 
@@ -273,14 +298,24 @@ def compose_mounted_arm_mjcf(
         ground: Also stage a collidable floor (see
             :func:`compose_ground_plane_mjcf`). A composite under gravity needs
             one for the same reason a bare legged twin does.
+        arm_mass_scale: Multiplier applied to every arm-subtree ``<inertial>``
+            (mass + diagonal/full inertia). ``1.0`` keeps menagerie mass;
+            values in ``(0, 1)`` shrink the dynamic payload so a bare-carrier
+            locomotion policy can stay upright while the arm stays visible and
+            kinematically held. Not a claim about real Go2+Z1 dynamics.
 
     Returns:
         ``(xml, meshdir)`` per the ``SceneComposition`` contract.
 
     Raises:
         ROSConfigError: Either ref fails to resolve, ``mount_body`` is absent,
-            or the arm model exposes no body to mount.
+            the arm model exposes no body to mount, or ``arm_mass_scale`` is
+            not strictly positive.
     """
+    if arm_mass_scale <= 0.0:
+        raise ROSConfigError(
+            f"compose_mounted_arm_mjcf: arm_mass_scale must be > 0 (got {arm_mass_scale})"
+        )
     base_path = _resolve_mjcf(base_mjcf_ref)
     arm_path = _resolve_mjcf(arm_mjcf_ref)
     if arm_mjcf_file:
@@ -309,6 +344,8 @@ def compose_mounted_arm_mjcf(
     arm_body = arm_root.find("worldbody/body")
     if arm_body is None:
         raise ROSConfigError(f"compose_mounted_arm_mjcf: {arm_path} declares no body to mount.")
+    if arm_mass_scale != 1.0:
+        _scale_subtree_inertial(arm_body, arm_mass_scale)
     arm_body.set("pos", " ".join(f"{v:g}" for v in mount_pos))
     if mount_quat is not None:
         arm_body.set("quat", " ".join(f"{v:g}" for v in mount_quat))

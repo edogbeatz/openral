@@ -14,7 +14,7 @@ Guide a new robot from hardware facts to an OpenRAL-compatible manifest, sim pat
 - Bringing up a HAL adapter, digital twin, HIL path, or deployment YAML.
 - Mapping sensors, joints, end-effectors, control modes, safety limits, and embodiment tags.
 - Checking whether an existing rSkill can run on a robot.
-- Debugging `openral detect`, `openral deploy sim`, `openral deploy run`, or dashboard bring-up for a robot.
+- Debugging `openral detect`, `openral deploy sim`, `openral deploy run`, or dashboard bring-up for a robot. Cricket Go2 start/view failures (WAITING, tunnels, Foxglove) belong in `.agents/skills/go2-foxglove-view/SKILL.md`, not a new skill.
 
 ## Required Context
 

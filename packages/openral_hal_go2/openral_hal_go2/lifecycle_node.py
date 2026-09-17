@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-r"""Unitree Go2 quadruped (12-DoF) HAL lifecycle node entry point.
+r"""Unitree Go2 / Go2+Z1 HAL lifecycle node entry point.
 
 Manifest-driven node: builds its HAL via
 ``openral_hal.lifecycle.make_lifecycle_main_from_manifest``, which reads
 the ``robot_yaml`` + ``hal_mode`` ROS parameters and routes through
 ``openral_hal.build_hal``. ``openral deploy sim`` injects ``hal_mode:=sim``
-(→ ``Go2MujocoHAL``). The Go2 is sim-only today (``hal.real`` is null), so
+(→ ``Go2MujocoHAL`` for ``robots/go2``, ``Go2Z1MujocoHAL`` for
+``robots/go2_z1``). Both are sim-only today (``hal.real`` is null), so
 ``hal_mode:=real`` raises ``ROSCapabilityMismatch`` until a real adapter
 lands.
 

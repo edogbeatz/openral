@@ -94,6 +94,12 @@
 }
 /* (body::after fractal-noise overlay removed) */
 
+/* The `hidden` attribute is the page's one mechanism for "this run has no such
+   producer" (see REVEAL_ON_FEED in dashboard.js). It has to beat the `display`
+   every card, section, and grid child sets, so it is declared once, loudly,
+   instead of being re-negotiated per component. */
+[hidden] { display: none !important; }
+
   /* ------------------- HEADER ------------------- */
   header {
     position: sticky; top: 0; z-index: 50;
@@ -179,6 +185,24 @@
     gap: 12px;
     min-height: 0;
   }
+  /* Stream band down to the event log alone (no metrics, no world state): hand
+     the height back to the workspace, where a 12-DoF joint list actually wants
+     it, instead of stretching one log to half the viewport. */
+  main:has(.band-stream[data-live="1"]) { grid-template-rows: auto auto 2.8fr 1fr; }
+  /* No visual card at all (a page opened before the robot starts): the
+     workspace shrinks to the rail's own height and the event log takes the
+     rest, instead of reserving a 2×2 visual area for producers that have not
+     spoken yet. */
+  main:has(.main-visual[data-live="0"]) { grid-template-rows: auto auto auto 1fr; }
+  /* Pinned rows, not auto-placement: any of these can be `hidden` (the identity
+     strip is, until a run identifies itself), and auto-placement then slid
+     every later band up a row — the stream band inherited the workspace's
+     `auto` height and the last row went empty. */
+  main > .idbar        { grid-row: 1; }
+  main > .band-command { grid-row: 2; }
+  main > .workspace    { grid-row: 3; }
+  main > .band-stream  { grid-row: 4; }
+
   .band { display: grid; gap: 12px; min-height: 0; }
 
   section { display: flex; flex-direction: column; gap: 8px; margin: 0; min-height: 0; }
@@ -247,23 +271,27 @@
     grid-template-columns: minmax(0, 1fr) clamp(320px, 22vw, 400px);
     gap: 12px; min-height: 0;
   }
+  /* With no visual card live, the rail is the whole workspace — keep it at its
+     own width rather than stretching instruments across the page. */
+  .workspace:has(.main-visual[data-live="0"]) { grid-template-columns: clamp(320px, 22vw, 400px); }
+  .main-visual[data-live="0"] { display: none; }
 
-  /* Main visual: a wide LEFT column stacks the two horizontal cards (cameras
-     over reasoner); SLAM and pointcloud sit to their right as full-height
-     VERTICAL columns — the shape their square-ish map/cloud renders want. */
+  /* Main visual: the grid is sized by how many cards are actually showing
+     (`data-live`, set by revealFedCards), because which ones exist is a
+     property of the deploy runtime, not of the page. A quadruped bench with
+     only a camera feed gets the whole area; a full nav stack gets the 2×2 with
+     cameras on the wider column. Fixed grid areas can't do this — a hidden
+     column would leave a gap the width of the map that never arrives. */
   .main-visual {
     display: grid;
-    grid-template-columns: 1.6fr 1fr 1fr;
-    grid-template-rows: 1fr 1fr;
-    grid-template-areas:
-      "cam    slam cloud"
-      "reason slam cloud";
+    grid-auto-rows: minmax(0, 1fr);
+    grid-template-columns: 1.5fr 1fr;
     gap: 12px; min-height: 0;
   }
-  #cell-cameras     { grid-area: cam;    min-height: 0; }
-  #card-reasoner    { grid-area: reason; min-height: 0; }
-  #card-slam-map    { grid-area: slam;   min-height: 0; }
-  #card-world-cloud { grid-area: cloud;  min-height: 0; }
+  .main-visual[data-live="1"] { grid-template-columns: 1fr; }
+  /* Three live cards: the odd one out spans both columns rather than leaving a hole. */
+  .main-visual[data-live="3"] > *:last-child { grid-column: 1 / -1; }
+  .main-visual > * { min-height: 0; }
 
   /* Rail: stack of compact instruments, all kept on-screen. rSkill / system /
      ledger take their natural (short) height; the two that can run long (joints,
@@ -271,8 +299,16 @@
      card, so none is ever pushed off the bottom. */
   .rail {
     display: flex; flex-direction: column; gap: 12px;
-    min-height: 0; overflow: hidden;
+    min-height: 0;
+    /* Scrolls rather than clips. With every leg live the five rail cards want
+       more height than the row has, and `overflow: hidden` silently cut the
+       last one off — which is the Safety check ledger. A safety readout may be
+       one scroll away; it may not be invisible (CLAUDE.md §1.1). */
+    overflow-y: auto; overflow-x: hidden;
+    scrollbar-width: thin; scrollbar-color: var(--hair-strong) transparent;
   }
+  .rail::-webkit-scrollbar { width: 7px; }
+  .rail::-webkit-scrollbar-thumb { background: var(--hair-strong); border-radius: 4px; }
   .rail > .card { flex: 0 0 auto; min-height: 0; }
   /* Joints is the one rail card that can run long; it flexes to fill the
      leftover height (0,2,0 beats `.rail > .card`) and scrolls internally.
@@ -281,8 +317,13 @@
   .rail-joints { display: flex; flex-direction: column; }
   .rail-joints .joints { flex: 1 1 auto; min-height: 0; max-height: none; }
 
-  /* ---- STREAM band: metrics (wider) · event log · world state ---- */
+  /* ---- STREAM band: metrics (wider) · event log · world state ----
+     Metrics and world state can both be absent (no instrumentation, no
+     world_state producer); the event log is the only permanent resident, so
+     the band is sized by the live count like .main-visual. */
   .band-stream { grid-template-columns: 1.5fr 1.1fr 0.9fr; }
+  .band-stream[data-live="2"] { grid-template-columns: 1.4fr 1fr; }
+  .band-stream[data-live="1"] { grid-template-columns: 1fr; }
   .stream-cell { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
   .stream-hd { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
   .stream-hd .filter-bar { margin-left: auto; }
@@ -478,11 +519,9 @@
   /* ------------------- CAMERAS (primary viewports) -------------------
      Auto-fills the hero column: 1 feed spans wide, 2+ tile. Scrolls inside the
      framed #cameras well when more feeds arrive than fit the band height. */
-  /* Fit the robot's feeds in a single row when there are only a few (the
-     common 2-3 case: e.g. panda_mobile shoulder_left/right/wrist), so all
-     cameras stay visible side-by-side rather than wrapping 2-over-1. The
-     144px floor keeps 3 across a ~540px cell; more feeds wrap gracefully. */
-  .cameras { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; align-content: start; }
+  /* Two Go2 hero tiles (main/front + side/top) sit side-by-side on desktop.
+     Extra feeds wrap. Stack only when the visual column is truly narrow. */
+  .cameras { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-content: start; }
   .camera {
     background:
       linear-gradient(180deg, rgba(255,255,255,0.018) 0%, transparent 22%),
@@ -528,20 +567,19 @@
     color: var(--fg-dim); text-shadow: 0 1px 3px rgba(0,0,0,0.9);
   }
   .camera .overlay-src:empty { display: none; }
-  /* scanline veil over the live feed */
-  .camera .image-wrap::after {
-    content: ""; position: absolute; inset: 0; pointer-events: none;
-    background: repeating-linear-gradient(0deg, rgba(0,0,0,0) 0 2px, rgba(0,0,0,0.12) 2px 3px);
-    opacity: 0.5; mix-blend-mode: multiply;
-  }
   .camera .camera-placeholder {
-    position: absolute; inset: 0;
+    position: absolute; inset: 0; z-index: 1;
     background:
       linear-gradient(135deg, #0a121b 0%, #0f1a26 100%),
       repeating-linear-gradient(45deg, transparent 0 11px, rgba(255,255,255,0.02) 11px 12px);
     display: flex; align-items: center; justify-content: center;
     color: var(--fg-mute); font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em;
   }
+  /* MJPEG multipart often never fires img.onload. An opaque placeholder would
+     hide the live <img> forever ("I don't see the video"). Hide it as soon as
+     a stream URL is set; .is-streaming is the JS/HTML twin of the same rule. */
+  .camera:has(img[src]) .camera-placeholder,
+  .camera.is-streaming .camera-placeholder { display: none; }
   .camera .corner {
     position: absolute; width: 15px; height: 15px;
     border: 1.5px solid rgba(255,255,255,0.55); z-index: 3;
@@ -827,6 +865,12 @@
     font-size: 12px; line-height: 1; padding: 0 2px;
   }
   .event-log .event-focus .clear:hover { color: var(--fg); }
+  /* Collapsed live-debug banner: one row per stream while the Debug chip is off. */
+  .event-log .event-activity {
+    margin: 2px 8px 6px; padding: 4px 10px; border-radius: 6px;
+    font-family: var(--mono); font-size: 10px; color: var(--fg-mute);
+    background: rgba(255,255,255,0.03); border: 1px solid var(--hair);
+  }
   .event {
     display: grid; grid-template-columns: 82px max-content 1fr max-content;
     gap: 14px; padding: 5px 18px; border-bottom: 1px solid var(--hair-soft);
@@ -942,24 +986,24 @@
     .band { display: flex; flex-direction: column; gap: 12px; }
     .band-stream, .band-command { grid-template-columns: 1fr; }
     .workspace { display: flex; flex-direction: column; gap: 12px; }
-    .main-visual {
-      display: grid; grid-template-columns: 1fr 1fr; grid-template-areas: none;
-      grid-template-rows: none; gap: 12px;
-    }
-    #cell-cameras, #card-reasoner, #card-slam-map, #card-world-cloud { grid-area: auto; }
+    .main-visual { display: grid; grid-template-columns: 1fr 1fr; grid-auto-rows: auto; gap: 12px; }
+    .main-visual[data-live="3"] > *:last-child { grid-column: auto; }
     .rail { display: flex; flex-direction: column; overflow: visible; }
     .rail-joints .joints, .rail-world .scroll-y { max-height: none; }
     .stream-cell, #card-reasoner, #cameras,
     .scroll-y, .grow { min-height: 0; flex: none; }
     .scroll-y { overflow: visible; }
     #cameras { overflow: visible; }
-    .cameras { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
+    .cameras { grid-template-columns: 1fr 1fr; }
     .event-log { max-height: 320px; overflow-y: auto; }
     #metrics.panel { max-height: 460px; }
     .idbar { flex-wrap: wrap; }
     .counters-compact { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); grid-auto-flow: row; }
   }
-  @media (max-width: 700px) { .main-visual { grid-template-columns: 1fr; } }
+  @media (max-width: 700px) {
+    .main-visual { grid-template-columns: 1fr; }
+    .cameras { grid-template-columns: 1fr; }
+  }
 
   /* ------------------- OPERATOR PROMPT (command line) ------------------- */
   .prompt-box {
@@ -1061,6 +1105,137 @@
   .prompt-box button:disabled { background: var(--fg-mute); cursor: not-allowed; }
   #prompt-status.error { color: var(--err); }
   #prompt-status.ok { color: var(--ok); }
+  /* ---- RUN SKILL (guarded write control, command band) ----
+     One strip under the prompt: which skill, its declared goal params, Run.
+     Only present when OPENRAL_DASHBOARD_WRITE_CONTROLS=1. It lives here rather
+     than in the instrument rail because it is a command, not a reading — and
+     because a rail card tall enough to hold it pushed the safety ledger off
+     the bottom of the rail. */
+  .runskill-bar {
+    display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+    margin-top: 7px; padding: 7px 12px;
+    background: var(--panel);
+    border: 1px solid var(--hair); border-radius: var(--radius);
+  }
+  .demo-bar {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    margin-top: 7px; padding: 7px 12px;
+    background: var(--panel);
+    border: 1px solid var(--hair); border-radius: var(--radius);
+  }
+  .demo-bar .lbl {
+    font-family: var(--display); font-size: 8.5px; font-weight: 600;
+    letter-spacing: 0.14em; text-transform: uppercase; color: var(--fg-mute);
+  }
+  .demo-bar button {
+    font-family: var(--mono); font-size: 11px; font-weight: 600;
+    background: var(--bg-2); color: var(--text);
+    border: 1px solid var(--hair-strong); border-radius: 7px;
+    padding: 5px 10px; cursor: pointer;
+  }
+  .demo-bar button:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); }
+  .demo-bar button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .demo-bar button.active {
+    border-color: var(--accent); color: var(--accent); background: var(--accent-soft);
+  }
+  .demo-bar button.next:not(:disabled) {
+    border-color: var(--ok); color: var(--ok);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--ok) 35%, transparent);
+    animation: demo-next-pulse 1.6s ease-in-out infinite;
+  }
+  /* Stop is a skill-cancel, not the E-STOP latch — warn chroma, never err-strong. */
+  .demo-bar button#demo-stop:not(:disabled) {
+    border-color: var(--warn); color: var(--warn);
+  }
+  .demo-bar button#demo-stop:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--warn) 16%, transparent);
+    border-color: var(--warn);
+  }
+  .demo-bar .demo-sep {
+    width: 1px; align-self: stretch; min-height: 1.6rem;
+    background: var(--hair-strong); margin: 0 2px;
+  }
+  .demo-bar button#demo-cricket-start:not(:disabled) {
+    border-color: var(--ok); color: var(--ok);
+  }
+  .demo-bar button#demo-cricket-start:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--ok) 16%, transparent);
+  }
+  /* End Cricket is session teardown, not the E-STOP latch. */
+  .demo-bar button#demo-cricket-end:not(:disabled) {
+    border-color: var(--warn); color: var(--warn);
+  }
+  .demo-bar button#demo-cricket-end:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--warn) 16%, transparent);
+    border-color: var(--warn);
+  }
+  .demo-bar .demo-idle.warn { color: var(--warn); }
+  .demo-bar .demo-cricket-links { flex: 1 1 14rem; }
+  .demo-bar .demo-cricket-links a {
+    color: var(--ok); font-family: var(--mono); font-size: 10px;
+    margin-right: 0.6rem;
+  }
+  @keyframes demo-next-pulse {
+    0%, 100% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--ok) 35%, transparent); }
+    50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 55%, transparent); }
+  }
+  .demo-bar .demo-step {
+    font-family: var(--mono); font-size: 11px; font-weight: 700;
+    color: var(--accent); min-width: 9.5rem;
+  }
+  .demo-bar .meta { font-family: var(--mono); font-size: 10px; color: var(--fg-mute); flex: 1 1 12rem; }
+  .demo-bar .status { font-family: var(--mono); font-size: 11px; color: var(--fg-mute); }
+  .demo-bar .status.err { color: var(--err); }
+  .demo-bar .status.ok { color: var(--ok); }
+  .demo-bar select {
+    font-family: var(--mono); font-size: 11px;
+    background: var(--bg-2); color: var(--text);
+    border: 1px solid var(--hair-strong); border-radius: 7px; padding: 5px 7px;
+    flex: 0 1 260px; min-width: 8rem; max-width: 22rem; outline: none;
+  }
+  .demo-bar select:focus-visible {
+    border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .demo-bar select:disabled { opacity: 0.5; cursor: not-allowed; }
+  .runskill-bar .lbl {
+    font-family: var(--display); font-size: 8.5px; font-weight: 600;
+    letter-spacing: 0.14em; text-transform: uppercase; color: var(--fg-mute);
+  }
+  .runskill-bar select, .runskill-bar input {
+    font-family: var(--mono); font-size: 11px;
+    background: var(--bg-2); color: var(--text);
+    border: 1px solid var(--hair-strong); border-radius: 7px; padding: 5px 7px;
+    min-width: 0; outline: none;
+  }
+  .runskill-bar select { flex: 0 1 300px; }
+  .runskill-bar select:focus-visible, .runskill-bar input:focus-visible {
+    border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .runskill-params { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; min-width: 0; }
+  .runskill-params .param-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .runskill-params .param-row .k {
+    font-family: var(--mono); font-size: 10px; color: var(--fg-mute);
+    max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .runskill-params .param-boxes { display: flex; gap: 5px; }
+  .runskill-params input { width: 66px; }
+  .runskill-params .param-row > input { width: 190px; }
+  #runskill-go {
+    font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: .06em;
+    background: var(--accent); color: #0b0c10;
+    border: 0; border-radius: 8px; padding: 7px 13px; cursor: pointer;
+    transition: background .2s var(--ease);
+  }
+  #runskill-go:hover:not(:disabled) { background: var(--accent-tint); }
+  #runskill-go:disabled { background: var(--fg-mute); cursor: not-allowed; }
+  #runskill-go:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .runskill-bar .meta, .runskill-bar .status {
+    font-family: var(--mono); font-size: 10px; color: var(--fg-mute);
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .runskill-bar .status.ok { color: var(--ok); }
+  .runskill-bar .status.err { color: var(--err); }
+
   .prompt-hint { margin-top: 7px; font-family: var(--mono); font-size: 10px; color: var(--fg-faint); letter-spacing: 0.02em; }
   .prompt-box .status {
     font-family: var(--mono); font-size: 10px; color: var(--fg-mute);

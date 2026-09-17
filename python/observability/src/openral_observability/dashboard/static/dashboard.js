@@ -12,17 +12,31 @@
   };
   const fmtTime = (ts) => ts ? new Date(ts * 1000).toTimeString().slice(0, 8) : "";
 
+  // Run-skill state, declared up here because renderIdentity feeds it on the
+  // first telemetry frame — before the control's own wiring block runs.
+  let SKILLS = [];          // GET /api/skills — in-tree manifests, dispatchable ids
+  let runskillRobot = "";   // identity's robot model, the embodiment filter
+  let robotEmbodimentTags = []; // robot.yaml capabilities.embodiment_tags (loader gate)
+  let WALK_SKILL_IDS = [];  // GET /api/config walk_skill_ids — rsl-rl velocity walk
+  let markDemoRobot = (_robotId) => {};
+
+  // Identity readouts hide their whole pair when the run doesn't report them —
+  // a quadruped bench has no engine/device or chunk size, and twelve em-dashes
+  // is noise, not information.
   function setId(el, value, kind) {
     el.classList.remove("accent", "info");
+    const pair = el.closest(".pair");
     if (value === undefined || value === null || value === "") {
       el.textContent = "—";
       el.classList.add("empty");
-    } else {
-      el.textContent = String(value);
-      el.classList.remove("empty");
-      if (kind === "accent") el.classList.add("accent");
-      else if (kind === "info") el.classList.add("info");
+      if (pair) pair.hidden = true;
+      return;
     }
+    el.textContent = String(value);
+    el.classList.remove("empty");
+    if (kind === "accent") el.classList.add("accent");
+    else if (kind === "info") el.classList.add("info");
+    if (pair) pair.hidden = false;
   }
 
   function renderIdentity(state) {
@@ -32,6 +46,12 @@
     setId($("id-runid"), state.run_id ? state.run_id.slice(0, 12) : "");
     setId($("id-gitsha"), state.git_sha ? state.git_sha.slice(0, 8) : "");
     setId($("id-robot"), id["openral.hal.robot.model"]);
+    const robot = String(id["openral.hal.robot.model"] || "");
+    if (robot && robot !== runskillRobot) {
+      runskillRobot = robot;
+      onRobotIdentified();
+      markDemoRobot(robot);
+    }
     setId($("id-hal"), id["openral.hal.adapter"]);
     setId($("id-ctrl"), id["openral.hal.control_mode"], "info");
     setId($("id-skill"), id["openral.rskill.id"] || id["rskill.id"]);
@@ -44,6 +64,9 @@
     // on the deploy path, a structural constant with no signal.
     setId($("id-chunk-size"), id["inference.chunk_size"]);
     setId($("id-kernel"), id["safety.kernel"]);
+    // Nothing identified yet → drop the strip rather than leave an empty bar.
+    const bar = $("idbar");
+    if (bar) bar.hidden = !bar.querySelector(".pair:not([hidden])");
   }
 
   const PRIMARY_BY_FAMILY = {
@@ -204,10 +227,7 @@
     const diag = $("ws-diag");
     attrs.innerHTML = "";
     diag.innerHTML = "";
-    if (!ws || ws.ts_unix == null) {
-      attrs.innerHTML = '<div class="empty-state">waiting for world_state.snapshot</div>';
-      return;
-    }
+    if (!ws || ws.ts_unix == null) return;  // card is hidden until the first snapshot
     const pairs = [
       ["components stale", ws.components_stale ?? "—", false],
       ["latched error", ws.has_latched_error ? "✗ YES" : "✓ no", false],
@@ -425,6 +445,45 @@
 
   const shortId = (s) => { const p = String(s).split("/"); return p[p.length - 1]; };
 
+  // Go2 HAL camera keys (same names Foxglove/HAL publish). Always mounted so
+  // WAITING still shows two labeled panels instead of an empty grid.
+  const HERO_CAMERAS = [
+    { name: "front", role: "main", label: "Main · front" },
+    { name: "top", role: "side", label: "Side · top" },
+  ];
+  const HERO_NAMES = HERO_CAMERAS.map((h) => h.name);
+
+  function cameraLabel(name) {
+    const hero = HERO_CAMERAS.find((h) => h.name === name);
+    return hero ? hero.label : name;
+  }
+
+  function cricketCameraFallbackUrl(name, currentSrc) {
+    // Laptop :4318 often 404s /api/camera until this process is restarted
+    // (or has no local OTLP). Cricket's dashboard is tunneled at :14318.
+    // Same-origin already-cricket URLs must not retry themselves.
+    const src = String(currentSrc || "");
+    if (src.indexOf("127.0.0.1:14318") !== -1 || src.indexOf("localhost:14318") !== -1) {
+      return null;
+    }
+    if (location.port === "14318") return null;
+    return "http://127.0.0.1:14318/api/camera/" + encodeURIComponent(name) + "/stream";
+  }
+
+  function cameraRole(name, cam) {
+    const hero = HERO_CAMERAS.find((h) => h.name === name);
+    if (hero) return hero.role;
+    return (cam && (cam.role || cam.modality)) || "cam";
+  }
+
+  function heroRoster(cams) {
+    const names = HERO_NAMES.slice();
+    Object.keys(cams || {}).sort((a, b) => a.localeCompare(b)).forEach((n) => {
+      if (!names.includes(n)) names.push(n);
+    });
+    return names;
+  }
+
   // Live tiles, keyed by camera name. Kept across renders instead of being
   // rebuilt: recreating the <img> would restart its MJPEG stream on every SSE
   // tick, and the overlay needs the loaded image's natural size to map source
@@ -433,60 +492,37 @@
 
   function renderPerception(perc) {
     const el = $("cameras");
+    if (!el) return;
     const cams = (perc && perc.cameras) || {};
     const overlays = (perc && perc.overlays) || {};
-    const names = Object.keys(cams).sort((a, b) => a.localeCompare(b));
-    if (names.length === 0) {
-      if (camTiles.size || !el.firstChild) {
-        camTiles.clear();
-        el.innerHTML = '<div class="empty-state" style="grid-column: 1 / -1">waiting for sensors.read_latest</div>';
-      }
-      return;
-    }
-    // Rebuild the tile set only when the camera roster changes.
-    const roster = names.join(" ");
+    const names = heroRoster(cams);
+    const roster = names.join("|");
     if (el.dataset.roster !== roster) {
       el.dataset.roster = roster;
-      el.innerHTML = "";
-      camTiles.clear();
-      for (const name of names) el.appendChild(buildCameraTile(name, cams[name]));
+      const keep = new Set(names);
+      for (const [name, tile] of [...camTiles.entries()]) {
+        if (!keep.has(name)) {
+          tile.root.remove();
+          camTiles.delete(name);
+        }
+      }
+      for (const name of names) {
+        if (!camTiles.has(name)) {
+          const existing = el.querySelector('[data-camera="' + CSS.escape(name) + '"]');
+          if (existing) bindCameraTile(existing, name, cams[name] || {});
+          else el.appendChild(buildCameraTile(name, cams[name] || {}));
+        }
+      }
     }
     for (const name of names) {
       const tile = camTiles.get(name);
-      if (tile) updateCameraTile(tile, cams[name], overlays[name]);
+      if (tile) updateCameraTile(tile, cams[name] || {}, overlays[name]);
     }
   }
 
-  function buildCameraTile(name, cam) {
-    const hasFrame = cam.thumbnail_jpeg_b64 || cam.width;
-    const div = document.createElement("div");
-    div.className = "camera";
-    div.innerHTML = `
-      <div class="image-wrap">
-        ${hasFrame
-          ? `<img alt="${name}" onerror="this.replaceWith(Object.assign(document.createElement('div'),
-               {className:'camera-placeholder',textContent:'stream unavailable'}))" />`
-          : `<div class="camera-placeholder">no frames · ${cam.modality || "?"}</div>`}
-        <canvas class="overlay"></canvas>
-        <span class="corner tl"></span><span class="corner tr"></span>
-        <span class="corner bl"></span><span class="corner br"></span>
-        <div class="crosshair"></div>
-        <div class="pill-row">
-          <span class="pill live-pill"></span>
-          <span class="pill neutral role-pill"></span>
-        </div>
-        <div class="overlay-src"></div>
-      </div>
-      <div class="footer">
-        <span class="name">${name}</span>
-        <span class="lat"></span>
-        <span class="meta-sub dims"></span>
-        <span class="meta-sub right fps"></span>
-      </div>
-    `;
+  function bindCameraTile(div, name, cam) {
     const img = div.querySelector("img");
-    if (img) img.src = "/api/camera/" + encodeURIComponent(name) + "/stream";
-    camTiles.set(name, {
+    const tile = {
       root: div,
       img,
       canvas: div.querySelector("canvas.overlay"),
@@ -498,24 +534,90 @@
       fps: div.querySelector(".fps"),
       maskCache: {},
       scratch: null,
-    });
+    };
+    camTiles.set(name, tile);
+    if (img && !img.getAttribute("src")) {
+      img.src = "/api/camera/" + encodeURIComponent(name) + "/stream";
+    }
+    if (img) {
+      // Multipart MJPEG frequently never fires `load`. The stream URL itself
+      // is enough to drop the opaque placeholder; telemetry `hasFrame` also
+      // re-adds the class in updateCameraTile.
+      if (img.getAttribute("src")) div.classList.add("is-streaming");
+      img.addEventListener("load", () => div.classList.add("is-streaming"));
+      img.addEventListener("error", () => {
+        div.classList.remove("is-streaming");
+        const fallback = cricketCameraFallbackUrl(name, img.src);
+        if (fallback) {
+          img.src = fallback;
+          div.classList.add("is-streaming");
+        }
+      });
+      if (img.complete && img.naturalWidth > 0) div.classList.add("is-streaming");
+    }
+    return tile;
+  }
+
+  function buildCameraTile(name, cam) {
+    const div = document.createElement("div");
+    div.className = "camera";
+    div.dataset.camera = name;
+    const role = cameraRole(name, cam);
+    const label = cameraLabel(name);
+    div.dataset.role = role;
+    div.innerHTML = `
+      <div class="image-wrap">
+        <img alt="${label}" />
+        <div class="camera-placeholder">waiting for camera</div>
+        <canvas class="overlay"></canvas>
+        <span class="corner tl"></span><span class="corner tr"></span>
+        <span class="corner bl"></span><span class="corner br"></span>
+        <div class="crosshair"></div>
+        <div class="pill-row">
+          <span class="pill live-pill" style="display:none"></span>
+          <span class="pill neutral role-pill">${role}</span>
+        </div>
+        <div class="overlay-src"></div>
+      </div>
+      <div class="footer">
+        <span class="name">${label}</span>
+        <span class="lat"></span>
+        <span class="meta-sub dims"></span>
+        <span class="meta-sub right fps"></span>
+      </div>
+    `;
+    bindCameraTile(div, name, cam);
     return div;
   }
 
   function updateCameraTile(tile, cam, ov) {
-    const isLive = cam.ts_unix && (Date.now() / 1000 - cam.ts_unix) < 2;
-    tile.livePill.textContent = isLive ? "live" : "";
-    tile.livePill.style.display = isLive ? "" : "none";
-    tile.rolePill.textContent = (cam.role || cam.modality || "cam").toString();
-    // Frame AGE at read time — sampled at arbitrary phase against a
-    // free-running camera it legitimately sawtooths 0→frame period, so
-    // label it; the steady number is the EMA fps (bottom-right).
-    tile.lat.textContent = cam.age_ms != null ? "age " + num(cam.age_ms, 0) + " ms" : "—";
-    tile.dims.textContent =
-      `${cam.width || "?"} × ${cam.height || "?"} · ${cam.encoding || cam.modality || "?"}`;
-    tile.fps.textContent = cam.fps != null ? num(cam.fps, 0) + " fps" : "";
+    const hasFrame = !!(cam && (cam.thumbnail_jpeg_b64 || cam.width || cam.ts_unix));
+    // age_ms is host-clock (same as the snapshot). Browser Date.now() vs
+    // cricket ts_unix is routinely ≥60 s off and would never show "live".
+    const isLive = !!(cam && cam.age_ms != null && cam.age_ms < 2000);
+    if (hasFrame) tile.root.classList.add("is-streaming");
+    if (tile.livePill) {
+      tile.livePill.textContent = isLive ? "live" : "";
+      tile.livePill.style.display = isLive ? "" : "none";
+    }
+    if (tile.rolePill) {
+      tile.rolePill.textContent = cameraRole(tile.root.dataset.camera, cam);
+    }
+    tile.lat.textContent = cam && cam.age_ms != null ? "age " + num(cam.age_ms, 0) + " ms" : "—";
+    if (hasFrame) {
+      tile.dims.textContent =
+        `${cam.width || "?"} × ${cam.height || "?"} · ${cam.encoding || cam.modality || "?"}`;
+    } else {
+      tile.dims.textContent = "waiting for camera";
+    }
+    tile.fps.textContent = cam && cam.fps != null ? num(cam.fps, 0) + " fps" : "";
     if (tile.canvas) drawOverlay(tile, ov, cam);
   }
+
+  document.querySelectorAll("#cameras [data-camera]").forEach((div) => {
+    const name = div.dataset.camera;
+    if (name && !camTiles.has(name)) bindCameraTile(div, name, {});
+  });
 
   // Render the live 2D SLAM occupancy map. Mirrors the camera-card
   // pattern: empty-state when nothing has been emitted yet, switch to
@@ -598,17 +700,14 @@
 
   function renderSlamMap(slam) {
     const ageEl = $("slam-age");
-    const empty = $("slam-empty");
     const wrap = $("slam-image-wrap");
     if (!slam || !slam.ts_unix || !slam.png_b64) {
       if (ageEl) ageEl.textContent = "—";
-      if (empty) empty.style.display = "block";
       if (wrap) wrap.style.display = "none";
       const ov = $("slam-overlay"); if (ov) ov.innerHTML = "";
       return;
     }
     if (ageEl) ageEl.textContent = fmtAge(slam.ts_unix);
-    if (empty) empty.style.display = "none";
     if (wrap) wrap.style.display = "block";
     const img = $("slam-image");
     if (img) img.src = "data:image/png;base64," + slam.png_b64;
@@ -649,21 +748,18 @@
     renderRobotMarker(slam);
   }
 
-  // Render the robot-perspective octomap pointcloud. Mirrors
-  // renderSlamMap: empty-state until the first world.pointcloud span, then
+  // Render the robot-perspective octomap pointcloud. Mirrors renderSlamMap:
   // an inline base64 PNG with n_points / range / frame / source pinned below.
+  // The card is hidden entirely until the first world.pointcloud span.
   function renderWorldCloud(pc) {
     const ageEl = $("world-cloud-age");
-    const empty = $("world-cloud-empty");
     const wrap = $("world-cloud-image-wrap");
     if (!pc || !pc.ts_unix || !pc.png_b64) {
       if (ageEl) ageEl.textContent = "—";
-      if (empty) empty.style.display = "block";
       if (wrap) wrap.style.display = "none";
       return;
     }
     if (ageEl) ageEl.textContent = fmtAge(pc.ts_unix);
-    if (empty) empty.style.display = "none";
     if (wrap) wrap.style.display = "block";
     const img = $("world-cloud-image");
     if (img) img.src = "data:image/png;base64," + pc.png_b64;
@@ -690,9 +786,7 @@
       if (ageEl) ageEl.textContent = so && so.ts_unix ? fmtAge(so.ts_unix) : "—";
       if (empty) {
         empty.style.display = "block";
-        empty.textContent = (so && so.ts_unix)
-          ? "spatial memory is empty (0 objects remembered)"
-          : "waiting for world.scene_objects (preload a scene graph via spatial_memory_path, or merge the perception object-lift producer)";
+        empty.textContent = "spatial memory is empty (0 objects remembered)";
       }
       if (wrap) wrap.style.display = "none";
       return;
@@ -785,19 +879,16 @@
   // Render the reasoner's active MISSION task queue
   // (ordered subtasks, status, attempts, reward verdict) with the latest
   // ReasonerCore tick (tool / model / error) demoted to a footer line.
-  // Empty-state until the first reasoner.tick span lands.
+  // The card is hidden entirely until the first reasoner.tick span lands.
   function renderReasoner(r) {
     const ageEl = $("reasoner-age");
-    const empty = $("reasoner-empty");
     const detail = $("reasoner-detail");
     if (!r || !r.ts_unix) {
       if (ageEl) ageEl.textContent = "—";
-      if (empty) empty.style.display = "block";
       if (detail) detail.style.display = "none";
       return;
     }
     if (ageEl) ageEl.textContent = fmtAge(r.ts_unix);
-    if (empty) empty.style.display = "none";
     if (detail) detail.style.display = "block";
 
     // ── mission checklist ──
@@ -1091,12 +1182,38 @@
   // Event-log severity filter. Four buckets: debug / info / warn / error.
   // `error` catches safety_violation, estop_requested, error_latched, fatal
   // log lines + anything unrecognised. `debug` carries the bridged structlog
-  // DEBUG lines (issue #318) and defaults OFF — high-rate DEBUG (world_state
-  // ~30 Hz) would otherwise flood the 60-event view; toggle it on when needed.
+  // DEBUG lines (issue #318) and the per-tick span stream (hal.read_state,
+  // sensors.read_latest, rskill.execute, safety.check, …). The chip defaults
+  // OFF so a 30 Hz flood cannot cycle the 60-row view; when it is off the
+  // renderer still injects *collapsed* live debug (latest row per stream)
+  // so a locomotion-only run is not an empty log.
   const eventSevFilter = { debug: false, info: true, warn: true, error: true };
   const sevBucket = (sev) =>
     (sev === "debug" || sev === "info" || sev === "warn") ? sev : "error";
+  // Newest-of-kind debug older than this is not "what's happening now".
+  const LIVE_ACTIVITY_S = 8;
   let _lastEvents = [];
+
+  function activityKey(ev) {
+    const attrs = ev.attrs || {};
+    const source = attrs["openral.sensors.source"];
+    if (source) return String(ev.kind || "") + "::src:" + source;
+    const check = attrs["safety.check_name"];
+    if (check) return String(ev.kind || "") + "::chk:" + check;
+    return String(ev.kind || ev.title || "");
+  }
+
+  function collapsedLiveDebug(pool, now) {
+    // `pool` is newest-first; first write per key is the latest sample.
+    const latest = new Map();
+    for (const ev of pool) {
+      if (sevBucket(String(ev.severity || "info").toLowerCase()) !== "debug") continue;
+      if (ev.ts_unix == null || now - ev.ts_unix > LIVE_ACTIVITY_S) continue;
+      const key = activityKey(ev);
+      if (!latest.has(key)) latest.set(key, ev);
+    }
+    return [...latest.values()];
+  }
 
   function renderEvents(events) {
     _lastEvents = events || [];
@@ -1110,10 +1227,24 @@
       const cnt = chip.querySelector(".cnt");
       if (cnt) cnt.textContent = counts[b];
     }
-    let shown = all.filter((ev) => eventSevFilter[sevBucket(String(ev.severity || "info").toLowerCase())]);
     // Time focus (issue #3): scope to a window around a clicked sparkline point.
     const focused = _focusTime != null;
-    if (focused) shown = shown.filter((ev) => ev.ts_unix != null && Math.abs(ev.ts_unix - _focusTime) <= _FOCUS_HALF_S);
+    let pool = all;
+    if (focused) {
+      pool = all.filter((ev) => ev.ts_unix != null && Math.abs(ev.ts_unix - _focusTime) <= _FOCUS_HALF_S);
+    }
+    let shown = pool.filter((ev) => eventSevFilter[sevBucket(String(ev.severity || "info").toLowerCase())]);
+    let collapsed = false;
+    if (!eventSevFilter.debug && pool.length) {
+      const now = pool[0].ts_unix || 0;
+      const live = collapsedLiveDebug(pool, now);
+      const seen = new Set(shown.map(activityKey));
+      const extra = live.filter((ev) => !seen.has(activityKey(ev)));
+      if (extra.length) {
+        shown = shown.concat(extra).sort((a, b) => (b.ts_unix || 0) - (a.ts_unix || 0));
+        collapsed = true;
+      }
+    }
     const emptyState = (msg) => {
       const d = document.createElement("div"); d.className = "empty-state"; d.textContent = msg; return d;
     };
@@ -1129,11 +1260,17 @@
       banner.append(lbl, x);
       el.appendChild(banner);
     }
+    if (collapsed) {
+      const banner = document.createElement("div");
+      banner.className = "event-activity";
+      banner.textContent = "live · one row per stream — Debug shows every tick";
+      el.appendChild(banner);
+    }
     if (all.length === 0) { el.appendChild(emptyState("No events yet.")); return; }
     if (shown.length === 0) {
       el.appendChild(emptyState(focused
         ? "No events within ±" + _FOCUS_HALF_S + "s of " + fmtTime(_focusTime) + "."
-        : "No events match the active filters."));
+        : "No events match the active filters. Toggle Debug for the per-tick stream."));
       return;
     }
     for (const ev of shown.slice(0, 60)) {
@@ -1640,8 +1777,581 @@
       // mic proactively instead of letting the operator discover it via a
       // failed script load after clicking.
       if (cfg && cfg.voice_prompt_enabled === false) disableVoicePrompt();
+      // write_controls_enabled (OPENRAL_DASHBOARD_WRITE_CONTROLS=1) is what
+      // gates POST /api/skill/execute server-side. The Go2 demo bar (when
+      // demo_controls_enabled) is the operator dispatch surface — Apply skill,
+      // not a second Run strip. The Run-skill card only appears if write-
+      // controls are on and the demo bar is not.
+      robotEmbodimentTags = Array.isArray(cfg && cfg.robot_embodiment_tags)
+        ? cfg.robot_embodiment_tags.map((t) => String(t).toLowerCase())
+        : [];
+      WALK_SKILL_IDS = Array.isArray(cfg && cfg.walk_skill_ids)
+        ? cfg.walk_skill_ids.map(String)
+        : [];
+      if (cfg && cfg.robot_id && !runskillRobot) runskillRobot = String(cfg.robot_id);
+      const demoOn = Boolean(cfg && cfg.demo_controls_enabled);
+      if (cfg && cfg.write_controls_enabled && !demoOn) enableRunskill();
+      if (demoOn) enableDemoControls(cfg);
     })
     .catch(() => { JAEGER_URL = ""; });
+
+  const DEMO_PHASE_KEY = "openral.demo.phase";
+  const DEMO_ROBOT_KEY = "openral.demo.robot";
+  const DEMO_SKILL_PREFIX = "openral.demo.skill.";
+  let demoConfig = null;
+  let demoAutoStandStarted = false;
+
+  function demoPhase() {
+    return sessionStorage.getItem(DEMO_PHASE_KEY) || "choose";
+  }
+
+  function demoRobot() {
+    return sessionStorage.getItem(DEMO_ROBOT_KEY) || "";
+  }
+
+  function demoSkillStorageKey(robotId) {
+    return DEMO_SKILL_PREFIX + String(robotId || "go2");
+  }
+
+  function savedDemoSkill(robotId) {
+    return sessionStorage.getItem(demoSkillStorageKey(robotId)) || "";
+  }
+
+  function saveDemoSkill(robotId, skillId) {
+    const sid = String(skillId || "").trim();
+    if (!sid) return;
+    sessionStorage.setItem(demoSkillStorageKey(robotId), sid);
+  }
+
+  function demoPresetFor(cfg, rid) {
+    const presets = (cfg && Array.isArray(cfg.demo_presets)) ? cfg.demo_presets : [];
+    const want = String(rid || "").toLowerCase();
+    return presets.find((p) => {
+      const id = String(p.id || "").toLowerCase();
+      const robot = String(p.robot_id || "").toLowerCase();
+      return id === want || robot === want;
+    }) || {};
+  }
+
+  function presetAutoStands(cfg, rid) {
+    const meta = demoPresetFor(cfg, rid);
+    if (String(meta.resume || "") === "stand") return true;
+    if (String(meta.story || "") === "bare") return true;
+    return String(rid || "") === "go2";
+  }
+
+  function setDemoPhase(phase, robotId) {
+    sessionStorage.setItem(DEMO_PHASE_KEY, phase);
+    if (robotId !== undefined) {
+      if (robotId) sessionStorage.setItem(DEMO_ROBOT_KEY, robotId);
+      else sessionStorage.removeItem(DEMO_ROBOT_KEY);
+    }
+    paintDemoWizard();
+  }
+
+  markDemoRobot = function markDemoRobotImpl(robotId) {
+    const wanted = String(robotId || demoRobot() || "").toLowerCase();
+    document.querySelectorAll("#card-demo [data-preset]").forEach((btn) => {
+      btn.classList.toggle("active", String(btn.dataset.preset || "").toLowerCase() === wanted);
+    });
+  };
+
+  function paintDemoWizard() {
+    const phase = demoPhase();
+    const robot = demoRobot();
+    const step = $("demo-step");
+    const hint = $("demo-hint");
+    const recal = $("demo-recal");
+    const apply = $("demo-apply");
+    const stop = $("demo-stop");
+    const stand = $("demo-stand");
+    const skillSel = $("demo-skill");
+    const labels = {
+      go2: "Bare Go2",
+      go2_z1: "Go2 + Z1",
+    };
+    const name = labels[robot] || robot || "robot";
+
+    markDemoRobot(robot);
+
+    const recalRequired = phase === "need_recal";
+    if (recal) {
+      recal.disabled = phase === "choose" || phase === "loading";
+      recal.classList.toggle("next", recalRequired);
+      recal.title = recalRequired
+        ? "Required next step — snap upright at Hub home"
+        : "Snap upright at Hub home (tip recovery)";
+    }
+    if (apply) apply.disabled = phase !== "need_skill" && phase !== "ready";
+    if (stop) stop.disabled = phase !== "ready";
+    if (stand) stand.disabled = phase !== "ready";
+    if (skillSel) skillSel.disabled = phase === "choose" || phase === "loading";
+    document.querySelectorAll("#card-demo [data-preset]").forEach((btn) => {
+      btn.disabled = phase === "loading";
+    });
+
+    if (apply) apply.classList.toggle("next", phase === "need_skill");
+
+    if (phase === "choose") {
+      if (step) step.textContent = "1 · Choose robot";
+      if (hint) hint.textContent = "Choose Bare Go2 or Go2 + Z1";
+    } else if (phase === "loading") {
+      if (step) step.textContent = "1 · Loading…";
+      if (hint) hint.textContent = `Loading ${name} (~30-90s)`;
+    } else if (phase === "need_recal") {
+      if (step) step.textContent = "2 · Recalibrate";
+      if (hint) hint.textContent = `${name} needs Recalibrate before you can apply a skill`;
+    } else if (phase === "need_skill") {
+      if (step) step.textContent = "3 · Apply skill";
+      if (hint) hint.textContent = "calibrated — select skill and Apply";
+    } else if (phase === "ready") {
+      if (step) step.textContent = "4 · Drive";
+      if (hint) {
+        hint.textContent = `${name} running — Stop to cancel the skill (hold stand). Stand if it tips. End Cricket shuts the GPU session.`;
+      }
+    }
+    paintCricketIdle(cricketStatus);
+  }
+
+  async function autoCalibrateBareGo2(rid) {
+    if (demoAutoStandStarted) return;
+    demoAutoStandStarted = true;
+    setDemoPhase("loading", rid);
+    setDemoStatus("calibrating Bare Go2…", "");
+    const waits = [800, 1500, 2000, 2500, 3000, 4000];
+    for (const waitMs of waits) {
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+      try {
+        const { resp, data } = await demoPost("/api/demo/recalibrate");
+        if (resp.ok && data.accepted) {
+          setDemoPhase("need_skill", rid);
+          setDemoStatus("calibrated — select skill and Apply", "ok");
+          fillDemoSkillPicker();
+          return;
+        }
+      } catch (_err) { /* graph still coming up */ }
+    }
+    setDemoPhase("need_recal", rid);
+    setDemoStatus("auto-calibrate failed — click Recalibrate", "err");
+  }
+
+  function enableDemoControls(cfg) {
+    demoConfig = cfg || {};
+    const card = $("card-demo");
+    if (card) card.hidden = false;
+    const runCard = $("card-runskill");
+    if (runCard) runCard.hidden = true;
+    const rid = String((cfg && cfg.robot_id) || "");
+    if (rid && !demoRobot()) sessionStorage.setItem(DEMO_ROBOT_KEY, rid);
+    const phase = demoPhase();
+    // Bare Go2 (resume=stand): after a load, auto-stand once healthz is back.
+    // Armed Go2+Z1: do not auto-calibrate — Recalibrate is the next action.
+    // Never auto-walk.
+    if (rid && (phase === "loading" || phase === "choose")) {
+      if (presetAutoStands(cfg, rid) && phase === "loading") {
+        void autoCalibrateBareGo2(rid);
+      } else if (presetAutoStands(cfg, rid)) {
+        setDemoPhase("need_skill", rid);
+        setDemoStatus("calibrated — select skill and Apply", "ok");
+      } else {
+        setDemoPhase("need_recal", rid);
+        setDemoStatus("Go2 + Z1 ready — Recalibrate next", "ok");
+      }
+    } else if (rid && presetAutoStands(cfg, rid) && phase === "need_recal") {
+      // Leftover from the old always-Recalibrate wizard, or a failed auto-stand.
+      void autoCalibrateBareGo2(rid);
+    } else {
+      paintDemoWizard();
+      markDemoRobot(rid || demoRobot());
+    }
+    if (cfg && cfg.cricket) paintCricketIdle(cfg.cricket);
+    loadSkillsThen(fillDemoSkillPicker);
+    startCricketIdlePoll();
+    wireCricketIdleTouches();
+  }
+
+  function setDemoStatus(msg, kind) {
+    const el = $("demo-status");
+    if (!el) return;
+    el.textContent = msg || "";
+    el.classList.remove("err", "ok");
+    if (kind) el.classList.add(kind);
+  }
+
+  async function demoPost(path, body) {
+    const opts = { method: "POST", headers: { "Content-Type": "application/json" } };
+    if (body !== undefined) opts.body = JSON.stringify(body);
+    const resp = await fetch(path, opts);
+    const data = await resp.json().catch(() => ({}));
+    return { resp, data };
+  }
+
+  async function withDemoBusy(btn, fn) {
+    const buttons = document.querySelectorAll("#card-demo button");
+    buttons.forEach((b) => { b.disabled = true; });
+    try {
+      await fn();
+    } finally {
+      paintDemoWizard();
+    }
+  }
+
+  const demoStand = $("demo-stand");
+  if (demoStand) {
+    demoStand.addEventListener("click", () => withDemoBusy(demoStand, async () => {
+      setDemoStatus("standing…", "");
+      const { resp, data } = await demoPost("/api/demo/stand");
+      if (resp.ok && data.accepted) setDemoStatus("stood up", "ok");
+      else setDemoStatus(data.error || ("stand failed — HTTP " + resp.status), "err");
+    }));
+  }
+  const demoRecal = $("demo-recal");
+  if (demoRecal) {
+    demoRecal.addEventListener("click", () => withDemoBusy(demoRecal, async () => {
+      const phase = demoPhase();
+      if (phase === "choose" || phase === "loading") {
+        setDemoStatus("load a robot first", "err");
+        return;
+      }
+      setDemoStatus("recalibrating…", "");
+      const { resp, data } = await demoPost("/api/demo/recalibrate");
+      if (resp.ok && data.accepted) {
+        if (phase === "need_recal") setDemoPhase("need_skill");
+        fillDemoSkillPicker();
+        setDemoStatus(
+          phase === "need_recal"
+            ? "recalibrated — select a skill, then Apply"
+            : "stood up",
+          "ok"
+        );
+      } else {
+        setDemoStatus(data.error || ("recalibrate failed — HTTP " + resp.status), "err");
+      }
+    }));
+  }
+  const demoStop = $("demo-stop");
+  if (demoStop) {
+    demoStop.addEventListener("click", () => withDemoBusy(demoStop, async () => {
+      const phase = demoPhase();
+      if (phase !== "ready") {
+        setDemoStatus("nothing to stop — Apply a skill first", "err");
+        return;
+      }
+      setDemoStatus("stopping skill…", "");
+      const { resp, data } = await demoPost("/api/demo/stop");
+      if (resp.ok && data.accepted) {
+        setDemoPhase("need_skill");
+        setDemoStatus(data.detail || "stopped — standing. Apply to run again", "ok");
+      } else {
+        setDemoStatus(data.error || data.detail || ("stop failed — HTTP " + resp.status), "err");
+      }
+    }));
+  }
+  const demoApply = $("demo-apply");
+  if (demoApply) {
+    demoApply.addEventListener("click", () => withDemoBusy(demoApply, async () => {
+      const phase = demoPhase();
+      if (phase !== "need_skill" && phase !== "ready") {
+        setDemoStatus(
+          phase === "need_recal" ? "Recalibrate first" : "load + recalibrate first",
+          "err"
+        );
+        return;
+      }
+      const sel = $("demo-skill");
+      const skillId = sel && sel.value ? String(sel.value) : "";
+      if (!skillId) {
+        setDemoStatus("select a skill first", "err");
+        return;
+      }
+      saveDemoSkill(demoRobot(), skillId);
+      const opt = sel && sel.options[sel.selectedIndex];
+      const label = (opt && opt.text) || skillId;
+      setDemoStatus("applying " + label + "…", "");
+      let resp, data;
+      if (isWalkSkillId(skillId)) {
+        ({ resp, data } = await demoPost("/api/demo/walk", { skill_id: skillId }));
+      } else {
+        ({ resp, data } = await demoPost("/api/skill/execute", {
+          skill_id: skillId,
+          goal_params_json: "",
+        }));
+      }
+      if (resp.ok || resp.status === 202) {
+        setDemoPhase("ready");
+        setDemoStatus(label + " running — Stop to idle, Stand if tipped", "ok");
+      } else {
+        setDemoStatus(data.error || data.detail || ("apply failed — HTTP " + resp.status), "err");
+      }
+    }));
+  }
+  function wireDemoLoad(btnId) {
+    const btn = $(btnId);
+    if (!btn) return;
+    btn.addEventListener("click", () => withDemoBusy(btn, async () => {
+      const preset = btn.dataset.preset;
+      const current = demoRobot();
+      if (preset === "go2_z1") {
+        const ok = window.confirm(
+          "Go2+Z1 needs Recalibrate before you can apply a skill"
+        );
+        if (!ok) return;
+      } else if (current && current !== preset) {
+        const ok = window.confirm(
+          "Load Bare Go2? After reload it auto-calibrates — then select a skill and Apply."
+        );
+        if (!ok) return;
+      }
+      setDemoPhase("loading", preset);
+      setDemoStatus(
+        preset === "go2"
+          ? "loading Bare Go2 (no arm)… (~30-90s)"
+          : "loading Go2 + Z1… (~30-90s)",
+        ""
+      );
+      const { resp, data } = await demoPost("/api/demo/load", { preset });
+      if (resp.status === 202) {
+        setDemoStatus(
+          data.detail || (
+            preset === "go2"
+              ? "restarting — will auto-calibrate when the page returns"
+              : "restarting — Recalibrate when the page returns"
+          ),
+          "ok"
+        );
+        let tries = 0;
+        let sawDown = false;
+        const DEMO_RELOAD_POLL_MS = 2000;
+        const DEMO_RELOAD_MAX_TRIES = 90; // 180s — HAL+foxglove after a hard kill
+        const poll = setInterval(async () => {
+          tries += 1;
+          try {
+            const h = await fetch("/healthz", { cache: "no-store" });
+            if (!h.ok) sawDown = true;
+            // Require a down-gap so a surviving old dashboard is not treated
+            // as the new twin after 8s.
+            if (h.ok && sawDown && tries > 4) {
+              clearInterval(poll);
+              // Keep phase=loading so enableDemoControls can auto-stand (bare)
+              // or land on need_recal (armed).
+              location.reload();
+            }
+          } catch (_err) { sawDown = true; }
+          if (tries > DEMO_RELOAD_MAX_TRIES) {
+            clearInterval(poll);
+            setDemoStatus("reload timed out — refresh manually", "err");
+          }
+        }, DEMO_RELOAD_POLL_MS);
+      } else {
+        const fallback = current
+          ? (presetAutoStands(demoConfig, current) ? "need_skill" : "need_recal")
+          : "choose";
+        setDemoPhase(fallback, current || "");
+        setDemoStatus(data.error || ("load failed — HTTP " + resp.status), "err");
+      }
+    }));
+  }
+  wireDemoLoad("demo-go2");
+  wireDemoLoad("demo-go2-z1");
+
+  let cricketStatus = null;
+  let cricketPollTimer = 0;
+  let cricketTouchAt = 0;
+  const CRICKET_POLL_MS = 2000;
+  const CRICKET_TOUCH_MIN_MS = 15000;
+
+  function formatIdleRemain(seconds) {
+    const s = Math.max(0, Math.ceil(Number(seconds) || 0));
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    return m + ":" + String(r).padStart(2, "0");
+  }
+
+  function paintCricketLinks(status) {
+    const el = $("demo-cricket-links");
+    if (!el) return;
+    const st = status || cricketStatus || {};
+    const fox = st.foxglove_url || "";
+    const foxOpen = st.foxglove_open_url || "";
+    const dash = st.cricket_dashboard_url || "";
+    const role = st.role || "";
+    while (el.firstChild) el.removeChild(el.firstChild);
+    const addLink = (href, label) => {
+      if (!href) return;
+      const a = document.createElement("a");
+      a.href = href;
+      a.textContent = label;
+      if (href.startsWith("http")) {
+        a.target = "_blank";
+        a.rel = "noopener";
+      }
+      el.appendChild(a);
+    };
+    addLink(foxOpen || fox, fox ? ("Foxglove " + fox) : "Foxglove");
+    if (role === "laptop" && dash) {
+      addLink(dash, "cricket dashboard " + dash);
+    }
+    el.hidden = !el.firstChild;
+  }
+
+  function offerCricketViewers(status) {
+    const st = status || cricketStatus || {};
+    paintCricketLinks(st);
+    if (st.foxglove_open_url) {
+      window.open(st.foxglove_open_url, "_blank");
+    }
+  }
+
+  function paintCricketIdle(status) {
+    if (status) cricketStatus = status;
+    const st = cricketStatus || {};
+    const startBtn = $("demo-cricket-start");
+    const endBtn = $("demo-cricket-end");
+    const idleEl = $("demo-cricket-idle");
+    const graph = Boolean(st.graph_running);
+    const loading = demoPhase() === "loading";
+    paintCricketLinks(st);
+    if (startBtn) {
+      startBtn.disabled = graph || loading || Boolean(st.end_in_progress)
+        || Boolean(st.start_in_progress);
+      startBtn.title = graph
+        ? "Cricket graph is already up — End Cricket to shut the GPU session"
+        : (st.start_from_cold_hint
+          || "Start or attach cricket (brev start, tunnels, Foxglove)");
+    }
+    if (endBtn) {
+      endBtn.disabled = Boolean(st.end_in_progress);
+    }
+    if (!idleEl) return;
+    if (st.idle_enabled === false) {
+      idleEl.hidden = true;
+      idleEl.textContent = "auto-stop off";
+      return;
+    }
+    idleEl.hidden = false;
+    const remain = Number(st.idle_remaining_s);
+    idleEl.classList.toggle("warn", Number.isFinite(remain) && remain <= 120);
+    if (st.idle_paused || st.skill_running) {
+      idleEl.textContent = "auto-stop paused — skill running";
+    } else if (Number.isFinite(remain)) {
+      idleEl.textContent = "auto-stop in " + formatIdleRemain(remain);
+    } else {
+      idleEl.textContent = "auto-stop off";
+    }
+  }
+
+  async function refreshCricketStatus() {
+    try {
+      const resp = await fetch("/api/demo/cricket", { cache: "no-store" });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      paintCricketIdle(data);
+    } catch (_err) { /* dashboard going down during End */ }
+  }
+
+  function startCricketIdlePoll() {
+    if (cricketPollTimer) return;
+    void refreshCricketStatus();
+    cricketPollTimer = window.setInterval(refreshCricketStatus, CRICKET_POLL_MS);
+  }
+
+  function wireCricketIdleTouches() {
+    const ping = () => {
+      const now = Date.now();
+      if (now - cricketTouchAt < CRICKET_TOUCH_MIN_MS) return;
+      cricketTouchAt = now;
+      void fetch("/api/demo/cricket/touch", { method: "POST" }).catch(() => {});
+    };
+    document.addEventListener("pointerdown", ping, { passive: true });
+    document.addEventListener("keydown", ping, { passive: true });
+  }
+
+  const demoCricketStart = $("demo-cricket-start");
+  if (demoCricketStart) {
+    demoCricketStart.addEventListener("click", () => withDemoBusy(demoCricketStart, async () => {
+      setDemoStatus("starting cricket…", "");
+      const { resp, data } = await demoPost("/api/demo/cricket/start");
+      if (resp.ok && data.already_running) {
+        setDemoStatus(data.detail || "cricket already up — open Foxglove", "ok");
+        paintCricketIdle(data);
+        offerCricketViewers(data);
+        return;
+      }
+      if (resp.status === 202) {
+        setDemoStatus(data.detail || "starting cricket graph… (~30-90s)", "ok");
+        paintCricketIdle(data);
+        const laptop = data.role === "laptop" || data.can_start_from_cold;
+        if (laptop) {
+          paintCricketLinks(data);
+          let tries = 0;
+          const poll = setInterval(async () => {
+            tries += 1;
+            await refreshCricketStatus();
+            if (cricketStatus && cricketStatus.graph_running) {
+              clearInterval(poll);
+              setDemoStatus(
+                cricketStatus.detail
+                  || "cricket up — Foxglove ws://localhost:8765",
+                "ok"
+              );
+              offerCricketViewers(cricketStatus);
+              return;
+            }
+            if (tries > 90) {
+              clearInterval(poll);
+              setDemoStatus(
+                "start timed out — try Foxglove ws://localhost:8765",
+                "err"
+              );
+              paintCricketLinks(cricketStatus || data);
+            }
+          }, 2000);
+          return;
+        }
+        let tries = 0;
+        let sawDown = false;
+        const poll = setInterval(async () => {
+          tries += 1;
+          try {
+            const h = await fetch("/healthz", { cache: "no-store" });
+            if (!h.ok) sawDown = true;
+            if (h.ok && sawDown && tries > 4) {
+              clearInterval(poll);
+              location.reload();
+            }
+          } catch (_err) { sawDown = true; }
+          if (tries > 90) {
+            clearInterval(poll);
+            setDemoStatus("start timed out — refresh manually", "err");
+          }
+        }, 2000);
+        return;
+      }
+      setDemoStatus(
+        data.error || data.start_from_cold_hint || ("start failed — HTTP " + resp.status),
+        "err"
+      );
+    }));
+  }
+  const demoCricketEnd = $("demo-cricket-end");
+  if (demoCricketEnd) {
+    demoCricketEnd.addEventListener("click", () => withDemoBusy(demoCricketEnd, async () => {
+      const ok = window.confirm(
+        "End Cricket stops the GPU session (graph + Brev instance) so billing stops.\n"
+        + "This is not E-STOP (E-STOP latches the kernel). Stop keeps the sim.\n\n"
+        + "Continue?"
+      );
+      if (!ok) return;
+      setDemoStatus("ending cricket…", "");
+      const { resp, data } = await demoPost("/api/demo/cricket/end");
+      if (resp.status === 202 || resp.ok) {
+        setDemoStatus(data.detail || "ending cricket — page will drop when the host stops", "ok");
+        paintCricketIdle({ ...(cricketStatus || {}), end_in_progress: true });
+      } else {
+        setDemoStatus(data.error || data.detail || ("end failed — HTTP " + resp.status), "err");
+      }
+    }));
+  }
 
   function renderTrace(trace) {
     const el = $("trace-id");
@@ -1704,18 +2414,63 @@
     wait: "waiting for data", live: "receiving data",
     paused: "data paused (stale)", error: "error",
   };
-  function setDot(cardId, ts, isError) {
+  function wallNow(state) {
+    // Age against the dashboard host's clock, not the browser's. A laptop
+    // viewing a port-forwarded remote :4318 is routinely ≥60 s off the VM;
+    // `Date.now() - last_ingest_ts` then sits at ~1 min forever and the
+    // header reads DEAD while ingest is live. The snapshot already ships
+    // `now_unix` for this.
+    const n = state && state.now_unix;
+    return (typeof n === "number" && n > 0) ? n : Date.now() / 1000;
+  }
+
+  function setDot(cardId, ts, isError, now) {
     const el = document.getElementById(cardId);
     if (!el) return;
     const title = el.querySelector(".title");
     if (!title) return;
     let st;
     if (isError) st = "error";
-    else if (ts) { _dotSeen.add(cardId); st = (Date.now() / 1000 - ts) < STALE_S ? "live" : "paused"; }
+    else if (ts) { _dotSeen.add(cardId); st = (now - ts) < STALE_S ? "live" : "paused"; }
     else st = _dotSeen.has(cardId) ? "paused" : "wait";
     title.classList.remove("st-wait", "st-live", "st-paused", "st-error");
     title.classList.add("st-" + st);
     title.title = DOT_LABEL[st];  // a11y: state is not conveyed by colour alone
+  }
+
+  // Optional cards: hidden until their producer speaks once, then permanent.
+  // Cameras are NOT in this table — Go2 main (`front`) + side (`top`) stay
+  // mounted from first paint so WAITING is two labeled panels, not an empty
+  // grid. Other legs (SLAM / octomap / reasoner / spatial memory) still hide
+  // until they speak. Revealing is one-way on purpose.
+  //
+  // Safety cards are NOT in this table either: they stay mounted from first
+  // paint so a trip is never off-screen (CLAUDE.md §1.1).
+  const REVEAL_ON_FEED = [
+    ["card-reasoner",    (s, t) => !!(t.reasoner && t.reasoner.ts_unix)],
+    ["card-slam-map",    (s, t) => !!(t.slam && t.slam.ts_unix)],
+    ["card-world-cloud", (s, t) => !!(t.pointcloud && t.pointcloud.ts_unix)],
+    ["card-robot-state", (s, t) => !!(t.robot_state && t.robot_state.ts_unix)],
+    ["card-system",      (s, t) => !!(t.system && t.system.ts_unix)],
+    ["card-world-state", (s, t) => !!(t.world_state && t.world_state.ts_unix)],
+    ["scene-objects-section", (s, t) => !!(t.scene_objects && t.scene_objects.ts_unix)],
+    ["cell-metrics",     (s) => (s.metrics || []).length > 0],
+  ];
+
+  // Both banded grids size themselves on how many children are showing, so a
+  // card that never arrives costs no column.
+  function setLiveCount(container) {
+    if (!container) return;
+    container.dataset.live = String([...container.children].filter((c) => !c.hidden).length);
+  }
+
+  function revealFedCards(state, topics) {
+    for (const [id, isFed] of REVEAL_ON_FEED) {
+      const el = $(id);
+      if (el && el.hidden && isFed(state, topics)) el.hidden = false;
+    }
+    setLiveCount($("main-visual"));
+    setLiveCount(document.querySelector(".band-stream"));
   }
 
   function render(state) {
@@ -1728,6 +2483,7 @@
     if (liveSkill) pulseIfNew("card-rskill_execute", liveSkill.ts_unix);
 
     const topics = state.topics || {};
+    revealFedCards(state, topics);
     renderRobotState(topics.robot_state, topics.commands);
     renderWorldState(topics.world_state);
     renderPerception(topics.perception);
@@ -1762,19 +2518,21 @@
     pulseIfNew("card-reasoner", topics.reasoner && topics.reasoner.ts_unix);
 
     // Status dot per card — same 4-state logic as the header conn dot.
-    setDot("card-rskill_execute", liveSkill && liveSkill.ts_unix, !!(liveSkill && liveSkill.status_code === 2));
-    setDot("card-robot-state", topics.robot_state && topics.robot_state.ts_unix, false);
-    setDot("card-world-state", topics.world_state && topics.world_state.ts_unix, false);
-    setDot("card-system", topics.system && topics.system.ts_unix, false);
+    const now = wallNow(state);
+    setDot("card-rskill_execute", liveSkill && liveSkill.ts_unix, !!(liveSkill && liveSkill.status_code === 2), now);
+    setDot("card-robot-state", topics.robot_state && topics.robot_state.ts_unix, false, now);
+    setDot("card-world-state", topics.world_state && topics.world_state.ts_unix, false, now);
+    setDot("card-system", topics.system && topics.system.ts_unix, false, now);
     setDot(
       "card-safety-status",
       topics.safety_status && topics.safety_status.ts_unix,
       !!(topics.safety_status && topics.safety_status.latched),
+      now,
     );
-    setDot("card-safety-ledger", topics.safety && topics.safety.latest_ts_unix, false);
-    setDot("card-slam-map", topics.slam && topics.slam.ts_unix, false);
-    setDot("card-world-cloud", topics.pointcloud && topics.pointcloud.ts_unix, false);
-    setDot("card-reasoner", topics.reasoner && topics.reasoner.ts_unix, false);
+    setDot("card-safety-ledger", topics.safety && topics.safety.latest_ts_unix, false, now);
+    setDot("card-slam-map", topics.slam && topics.slam.ts_unix, false, now);
+    setDot("card-world-cloud", topics.pointcloud && topics.pointcloud.ts_unix, false, now);
+    setDot("card-reasoner", topics.reasoner && topics.reasoner.ts_unix, false, now);
 
     renderCounters(state.counters || {}, state.events || []);
     renderEvents(state.events || []);
@@ -1785,7 +2543,7 @@
     if (!state.last_ingest_ts) {
       conn.className = "conn wait"; label.textContent = "waiting…";
     } else {
-      const dt = Date.now() / 1000 - state.last_ingest_ts;
+      const dt = now - state.last_ingest_ts;
       if (dt < 10) { conn.className = "conn live"; label.textContent = "live"; }
       else if (dt < 60) { conn.className = "conn stale"; label.textContent = "stale (" + dt.toFixed(0) + "s)"; }
       else { conn.className = "conn dead"; label.textContent = "dead (" + Math.floor(dt / 60) + "m)"; }
@@ -2163,6 +2921,262 @@
         setPromptStatus(String(e), "err");
       } finally {
         estopBtn.disabled = false;
+      }
+    });
+  }
+
+  // ── Run skill (POSTs to /api/skill/execute → ExecuteRskill action goal) ──
+  // Fallback strip when write-controls are on but the demo bar is not. The
+  // demo Apply button is the operator path: same execute endpoint, or
+  // /api/demo/walk when the selected id is the rsl-rl velocity walk skill.
+  function setRunskillStatus(text, kind) {
+    const el = $("runskill-status");
+    if (!el) return;
+    el.textContent = text;
+    el.className = "status" + (kind ? " " + kind : "");
+  }
+
+  function selectedSkill() {
+    const sel = $("runskill-select");
+    return SKILLS.find((s) => s.id === (sel && sel.value)) || null;
+  }
+
+  function compactSkillId(skillId) {
+    return String(skillId || "").toLowerCase().replace(/-/g, "_");
+  }
+
+  function isWalkSkillId(skillId) {
+    const sid = String(skillId || "");
+    if (!sid) return false;
+    if (WALK_SKILL_IDS.some((x) => String(x).toLowerCase() === sid.toLowerCase())) return true;
+    const compact = compactSkillId(sid);
+    return compact.includes("rsl_rl") && compact.includes("go2") && compact.includes("velocity");
+  }
+
+  function preferredWalkSkillId(offered) {
+    const ids = new Set(WALK_SKILL_IDS.map((x) => String(x).toLowerCase()));
+    const hit = offered.find((s) => ids.has(String(s.id).toLowerCase()));
+    if (hit) return hit.id;
+    const fuzzy = offered.find((s) => isWalkSkillId(s.id) || isWalkSkillId(s.dir));
+    return fuzzy ? fuzzy.id : "";
+  }
+
+  function offeredSkillsForRobot() {
+    const robot = runskillRobot.toLowerCase();
+    const fit = SKILLS.filter((s) => skillFitsRobot(s, robot, robotEmbodimentTags));
+    return fit.length ? fit : SKILLS;
+  }
+
+  function fillSkillSelect(selectEl, preferWalk) {
+    if (!selectEl) return;
+    const offered = offeredSkillsForRobot();
+    const keep = selectEl.value;
+    selectEl.innerHTML = "";
+    for (const s of offered) {
+      const opt = document.createElement("option");
+      opt.value = s.id;
+      opt.textContent = s.dir || s.id;
+      opt.title = s.description;
+      selectEl.appendChild(opt);
+    }
+    const walkId = preferWalk ? preferredWalkSkillId(offered) : "";
+    // Recalibrate / demo fill must not keep a selected arm_ready hold — that
+    // made Apply re-dispatch the 2 s stand (dog does not walk).
+    if (preferWalk && walkId) selectEl.value = walkId;
+    else if (offered.some((s) => s.id === keep)) selectEl.value = keep;
+    else if (walkId) selectEl.value = walkId;
+  }
+
+  function loadSkillsThen(thenFill) {
+    fetch("/api/skills")
+      .then((r) => (r.ok ? r.json() : { skills: [] }))
+      .then((body) => {
+        SKILLS = (body && body.skills) || [];
+        thenFill();
+      })
+      .catch(() => thenFill());
+  }
+
+  // One row per declared goal param. Arrays of numbers (the joystick shape)
+  // become one number box per item; scalars become a single box. A schema this
+  // renderer can't express falls back to a raw JSON field so the operator is
+  // never locked out of a skill's params.
+  function renderRunskillParams() {
+    const runskillParams = $("runskill-params");
+    if (!runskillParams) return;
+    runskillParams.innerHTML = "";
+    const skill = selectedSkill();
+    const modeEl = $("runskill-mode");
+    if (modeEl) modeEl.textContent = skill ? [skill.role, skill.model_family].filter(Boolean).join(" · ") : "—";
+    const schema = skill && skill.goal_params_schema;
+    const props = (schema && schema.properties) || null;
+    if (!props) {
+      runskillParams.appendChild(rawParamField(skill));
+      return;
+    }
+    for (const [name, spec] of Object.entries(props)) {
+      const row = document.createElement("label");
+      row.className = "param-row";
+      if (spec.description) row.title = String(spec.description).trim();
+      const lbl = document.createElement("span");
+      lbl.className = "k";
+      lbl.textContent = name;
+      row.appendChild(lbl);
+      const boxes = document.createElement("span");
+      boxes.className = "param-boxes";
+      const count = spec.type === "array" ? (spec.minItems || spec.maxItems || 3) : 1;
+      const isNum = spec.type === "array"
+        ? !spec.items || spec.items.type === "number" || spec.items.type === "integer"
+        : spec.type === "number" || spec.type === "integer";
+      if (spec.type === "array" && !isNum) {
+        runskillParams.appendChild(rawParamField(skill));
+        return;
+      }
+      for (let i = 0; i < count; i++) {
+        const box = document.createElement("input");
+        box.type = isNum ? "number" : "text";
+        box.step = "any";
+        box.placeholder = spec.type === "array" ? "[" + i + "]" : "default";
+        box.dataset.param = name;
+        box.dataset.array = spec.type === "array" ? "1" : "";
+        boxes.appendChild(box);
+      }
+      row.appendChild(boxes);
+      runskillParams.appendChild(row);
+    }
+  }
+
+  function rawParamField(skill) {
+    const row = document.createElement("label");
+    row.className = "param-row";
+    const lbl = document.createElement("span");
+    lbl.className = "k";
+    lbl.textContent = "goal params";
+    const box = document.createElement("input");
+    box.type = "text";
+    box.id = "runskill-raw";
+    box.spellcheck = false;
+    box.placeholder = skill && skill.goal_params_schema ? '{"key": value}' : "none declared — leave blank";
+    row.appendChild(lbl);
+    row.appendChild(box);
+    return row;
+  }
+
+  // Collect the filled boxes into the goal_params_json string. Blank stays
+  // blank: an omitted key means "use the manifest value", never an invented 0.
+  function collectGoalParams() {
+    const raw = $("runskill-raw");
+    if (raw) return raw.value.trim();
+    const runskillParams = $("runskill-params");
+    const out = {};
+    for (const [name, spec] of Object.entries((selectedSkill()?.goal_params_schema || {}).properties || {})) {
+      const boxes = [...runskillParams.querySelectorAll(`input[data-param="${name}"]`)];
+      const vals = boxes.map((b) => b.value.trim());
+      if (vals.every((v) => v === "")) continue;
+      if (vals.some((v) => v === "")) throw new Error(`${name}: fill every box or leave them all blank`);
+      const cast = (v) => (spec.type === "string" ? v : Number(v));
+      if (vals.some((v) => spec.type !== "string" && isNaN(Number(v)))) throw new Error(`${name}: not a number`);
+      out[name] = spec.type === "array" ? vals.map(cast) : cast(vals[0]);
+    }
+    return Object.keys(out).length ? JSON.stringify(out) : "";
+  }
+
+  // Narrow the picker to skills this robot can actually run. Embodiment tags
+  // are the loader's own gate (set intersection, plus the `any` wildcard) —
+  // matching only the robot *model name* hid the 12-DoF Go2 walk skill on
+  // go2_z1 even though that twin declares `go2` in capabilities.embodiment_tags.
+  function skillFitsRobot(skill, robot, robotTags) {
+    const tags = (skill.embodiment_tags || []).map((t) => String(t).toLowerCase());
+    if (tags.includes("any")) return true;
+    const hay = new Set((robotTags || []).map((t) => String(t).toLowerCase()));
+    if (robot) hay.add(String(robot).toLowerCase());
+    if (hay.size === 0) return true;
+    return tags.some((t) => hay.has(t));
+  }
+
+  function fillRunskillPicker() {
+    const runskillSelect = $("runskill-select");
+    const runskillIdInput = $("runskill-id");
+    if (!runskillSelect) return;
+    const offered = offeredSkillsForRobot();
+    fillSkillSelect(runskillSelect, false);
+    const none = offered.length === 0;
+    runskillSelect.hidden = none;
+    if (runskillIdInput) runskillIdInput.hidden = !none;
+    renderRunskillParams();
+  }
+
+  function fillDemoSkillPicker() {
+    const sel = $("demo-skill");
+    fillSkillSelect(sel, true);
+    if (!sel) return;
+    const robot = demoRobot() || runskillRobot;
+    const saved = savedDemoSkill(robot);
+    // Recalibrate already ran arm_ready. Restoring that hold over preferWalk
+    // made Apply re-dispatch the 2 s stand instead of rsl-rl walk.
+    const savedIsWalk = isWalkSkillId(saved);
+    if (savedIsWalk && [...sel.options].some((opt) => opt.value === saved)) {
+      sel.value = saved;
+    }
+    if (sel.value) saveDemoSkill(robot, sel.value);
+  }
+
+  const demoSkillEl = $("demo-skill");
+  if (demoSkillEl) {
+    demoSkillEl.addEventListener("change", () => {
+      saveDemoSkill(demoRobot() || runskillRobot, demoSkillEl.value);
+    });
+  }
+
+  function enableRunskill() {
+    const card = $("card-runskill");
+    if (!card) return;
+    card.hidden = false;
+    loadSkillsThen(fillRunskillPicker);
+  }
+
+  // Called from renderIdentity the first time the run names its robot, so the
+  // picker narrows to that embodiment as soon as telemetry identifies it.
+  function onRobotIdentified() {
+    const card = $("card-runskill");
+    if (card && !card.hidden) fillRunskillPicker();
+    const demo = $("card-demo");
+    if (demo && !demo.hidden) fillDemoSkillPicker();
+  }
+
+  const runskillSelectEl = $("runskill-select");
+  if (runskillSelectEl) runskillSelectEl.addEventListener("change", renderRunskillParams);
+
+  const runskillGo = $("runskill-go");
+  if (runskillGo) {
+    runskillGo.addEventListener("click", async () => {
+      const sel = $("runskill-select");
+      const idInput = $("runskill-id");
+      const skillId = (sel && !sel.hidden) ? sel.value : (idInput ? idInput.value.trim() : "");
+      if (!skillId) { setRunskillStatus("pick a skill first", "err"); return; }
+      let goalParams;
+      try {
+        goalParams = collectGoalParams();
+      } catch (e) {
+        setRunskillStatus(String(e.message || e), "err");
+        return;
+      }
+      runskillGo.disabled = true;
+      setRunskillStatus("dispatching…", "");
+      try {
+        const resp = await fetch("/api/skill/execute", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ skill_id: skillId, goal_params_json: goalParams }),
+        });
+        const body = await resp.json().catch(() => ({}));
+        if (resp.status === 202) setRunskillStatus("accepted · " + String(body.goal_id || "").slice(0, 8), "ok");
+        else if (resp.status === 409) setRunskillStatus("rejected by the action server", "err");
+        else setRunskillStatus(body.error || body.detail || ("HTTP " + resp.status), "err");
+      } catch (e) {
+        setRunskillStatus(String(e), "err");
+      } finally {
+        runskillGo.disabled = false;
       }
     });
   }

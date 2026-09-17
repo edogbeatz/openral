@@ -13,7 +13,7 @@ Live status of OpenRAL development. For detailed architecture and module-by-modu
 | LeRobot SO-100/SO-101 HAL | ✅ shipped — real + MuJoCo `SO100FollowerHAL`, `SO100_DESCRIPTION`, `openral connect` |
 | Franka / UR5e / UR10e HALs | ✅ sim shipped over `MujocoArmHAL`; real-HW adapters landed (UR5e/UR10e via `ur_robot_driver`, Franka via FCI, Sawyer, ALOHA) — HIL gated on lab runners (M3) |
 | Humanoid + bimanual HALs (sim) | ✅ shipped — `G1MujocoHAL`, `H1MujocoHAL`, `AlohaMujocoHAL`, `OpenArmMujocoHAL`, `Rizon4MujocoHAL`, `PandaMobileHAL` with lifecycle nodes |
-| Quadruped HAL (sim spike) | 🟡 `Go2MujocoHAL` + `go2_bench` pipe proof — no gait / real HAL / Go2 Edu |
+| Quadruped HAL (sim) | 🟡 `Go2MujocoHAL` + `Go2Z1MujocoHAL` shipped; `go2_walk` / `go2_z1_walk` + rsl-rl ONNX gait; no real HAL / Go2 Edu; ACM not gait-swept |
 | Sensor adapters | 🟡 in flight — `openral_sensors` catalog (RealSense D435/D435i/D415, Logitech UVC, Luxonis OAK-D Pro, Robotiq FT 300-S) + launch-gen + ROS image publisher; full perception-head ROS package still planned |
 | World State aggregator | ✅ shipped — 30 Hz tf2-aware snapshot, stale-sensor diagnostics, detected-objects lift |
 | Persistent spatial memory (scene graph) | 🟡 in flight — durable advisory object/place/room/agent graph the S2 reasoner queries (recall/resolve) + CLIP open-vocab match; sqlite-vec persistence + ROS feeder pending |

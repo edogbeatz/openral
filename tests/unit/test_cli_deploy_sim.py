@@ -752,6 +752,30 @@ def test_go2_bench_resolves_bare_twin() -> None:
     assert "gravity_enabled" not in invocation.hal_params
 
 
+def test_go2_z1_walk_resolves_composite_bare_twin() -> None:
+    """go2_z1_walk reuses openral_hal_go2 with the composite manifest.
+
+    No scene-level composition (arm+ground come from robot scene_defaults).
+    Gravity-on is a scene ``hal.defaults`` merge, not a ROS param here.
+    """
+    invocation = resolve_launch_invocation(
+        config=_REPO_ROOT / "scenes" / "deploy" / "go2_z1_walk.yaml",
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    assert invocation.robot_id == "go2_z1"
+    assert invocation.hal.package == "openral_hal_go2"
+    assert invocation.hal.supported_robot_names == frozenset({"go2_z1"})
+    assert invocation.hal.bare_twin_sim is True
+    assert invocation.hal_params["robot_yaml"] == str(
+        _REPO_ROOT / "robots" / "go2_z1" / "robot.yaml"
+    )
+    assert invocation.hal_params["hal_mode"] == "sim"
+    assert "sim_env_yaml" not in invocation.hal_params
+
+
 def test_g1_vln_scene_enables_walking_controller() -> None:
     invocation = resolve_launch_invocation(
         config=_REPO_ROOT / "scenes" / "deploy" / "g1_vln.yaml",

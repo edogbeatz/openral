@@ -1,7 +1,7 @@
 ---
 type: source
 tags: [openral, claude-md, rules, safety, licensing]
-updated: 2026-09-16
+updated: 2026-09-17
 source: CLAUDE.md
 source_kind: in-repo
 ---
@@ -36,6 +36,10 @@ the PR checklist, and the exception hierarchy. When this wiki and
   markers honest.
 - **Docs travel with the code.** No "docs follow-up" PRs. That includes
   the hand-edited repo state map (see [[sources/repo-map]]).
+- **Wiki close-out is mandatory.** Every finished task updates the
+  pages it touched and appends `wiki/log.md` (skill
+  `.agents/skills/openral-wiki/`, op `work`). Chat is not project
+  memory. Ask-to-file is banned — file.
 - **Pre-existing errors get their own commit** — a separate prior
   `fix(...)` on the same branch, never folded into the feature commit.
 - **Conventional Commit types decide the release.** `fix` → patch,

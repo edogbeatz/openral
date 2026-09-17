@@ -20,9 +20,11 @@
 # gripper at up to 1.196 m, and 1.196 m with the gripper ahead of the body.
 # Interior door handles sit at 0.85-1.05 m, inside that envelope.
 #
-# Mass: 19.9 kg total, of which the arm is 4.42 kg — under the Go2 manifest's
-# declared `can_lift_kg: 8.0`. Real Unitree pairs the Z1 with the larger B1;
-# this is a sim study, not a claim that a physical Go2 carries a Z1.
+# Mass: menagerie Go2 + Z1 is ~19.9 kg total (arm ~4.42 kg), under the Go2
+# manifest's `can_lift_kg: 8.0`. Full arm mass tips the bare-Go2 rsl-rl walk
+# skill within a few metres, so `scene_defaults.composition.arm_mass_scale`
+# shrinks arm inertias for locomotion demos (meshes/kinematics unchanged).
+# Real Unitree pairs the Z1 with the larger B1; this is a sim study.
 #
 # Sim-only: `hal.real` is null, inherited from the Go2 (no unitree_sdk2
 # adapter exists). Control is MIXED — the Go2's legs are torque `<motor>`
@@ -371,6 +373,11 @@ scene_defaults:
       mount_body: "base"
       # Forward on the torso, mirroring how Unitree mounts the Z1 on a B1.
       mount_pos: [0.18, 0.0, 0.06]
+      # Bare-Go2 rsl-rl velocity policy was not trained with a Z1 payload.
+      # With the arm held kinematically (HAL zeroes Z1 actuator gains), 0.01
+      # keeps the mesh visible while the dog finishes an 8 s walk upright.
+      # 0.05+ still tipped around 2 m with collisions=0; 1.0 tips sooner.
+      arm_mass_scale: 0.01
 
 sim:
   floating_base: true

@@ -81,11 +81,16 @@ _MAX_EE_FRAMES = 8
 # (+33%), every frame. Measured on a representative frame:
 #   640x480 q90 -> 99.0 KiB JPEG -> 132.0 KiB base64 -> 8.11 MB/s at 60/s
 #   320x240 q60 ->  3.2 KiB JPEG ->   4.2 KiB base64 -> 0.26 MB/s at 60/s
-# ~31x less OTLP traffic; the PIL encode (in the deploy process, under the
-# GIL, competing with model loads/inference) also gets far cheaper.
-_THUMB_MAX_WIDTH = 320
-_THUMB_MAX_HEIGHT = 240
-_THUMB_JPEG_QUALITY = 60
+#   480x360 q80 -> ~12 KiB JPEG ->  ~16 KiB base64 -> ~1.0 MB/s at 60/s
+# The 320x240 q60 cap was cheap, but the capability-driven dashboard now
+# stretches a single camera across the whole visual area (~3x linear), so
+# that JPEG reads as mud. 480x360 is still a real shrink on the 640x480
+# cameras this repo binds (the 640x480 q90 trap stays closed) and ~8x less
+# OTLP traffic than the no-op; q80 + 4:4:4 chroma keeps the floor/sky
+# gradients the Go2 front cam actually shows.
+_THUMB_MAX_WIDTH = 480
+_THUMB_MAX_HEIGHT = 360
+_THUMB_JPEG_QUALITY = 80
 
 
 def _r3(values: Iterable[float]) -> list[float]:
@@ -216,7 +221,7 @@ def record_sensor_frame_attrs(
     channel for the dashboard's camera tiles, not a lossless video transport.
     Callers range from DeployRunner's throttled per-camera cadence up to the
     deploy sensor pump's full reader rate (~30 Hz per camera; measured
-    2.42 ms/frame at 320x240 q60 with Pillow dropping the GIL) — keep new
+    a few ms/frame at 480x360 q80 with Pillow dropping the GIL) — keep new
     callers within that envelope, since every thumbnail also transits the
     OTLP exporter. When set, the value is base64-encoded inline; downstream
     consumers (including ``openral_observability.dashboard``) decode it
@@ -305,14 +310,39 @@ def emit_sensor_frame_span(
         )
 
 
+def _jpeg_thumbnail(img: Any) -> bytes:
+    """Downscale ``img`` into the dashboard JPEG envelope and return the bytes.
+
+    LANCZOS on the shrink, q80, 4:4:4 chroma — the previous BICUBIC / q60 /
+    4:2:0 envelope was cheap and looked fine at card-size, and looks like
+    mud once a single camera fills the visual area.
+    """
+    from PIL import Image
+
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    img.thumbnail((_THUMB_MAX_WIDTH, _THUMB_MAX_HEIGHT), Image.Resampling.LANCZOS)
+    buf = io.BytesIO()
+    img.save(
+        buf,
+        format="JPEG",
+        quality=_THUMB_JPEG_QUALITY,
+        # ``optimize=True`` is a second Huffman pass that 2-10x encode
+        # time for a few percent size; WorldState runs this on the runtime
+        # executor next to the skill.
+        subsampling=0,
+    )
+    return buf.getvalue()
+
+
 def encode_rgb_thumbnail(rgb: Any) -> bytes | None:
     """Encode an HWC uint8 RGB ndarray as a small JPEG suitable for OTLP.
 
     Returns ``None`` when Pillow isn't importable so producers can keep
     the call site unconditional without paying for an ImportError on
     headless test runners. Resizes to fit within
-    ``_THUMB_MAX_WIDTH * _THUMB_MAX_HEIGHT`` preserving aspect ratio;
-    encodes at JPEG quality ``_THUMB_JPEG_QUALITY`` (~60).
+    ``_THUMB_MAX_WIDTH x _THUMB_MAX_HEIGHT`` preserving aspect ratio;
+    encodes at JPEG quality ``_THUMB_JPEG_QUALITY``.
     """
     try:
         from PIL import Image
@@ -322,12 +352,7 @@ def encode_rgb_thumbnail(rgb: Any) -> bytes | None:
         img = Image.fromarray(rgb)
     except Exception:
         return None
-    img.thumbnail((_THUMB_MAX_WIDTH, _THUMB_MAX_HEIGHT))
-    if img.mode != "RGB":
-        img = img.convert("RGB")
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=_THUMB_JPEG_QUALITY, optimize=True)
-    return buf.getvalue()
+    return _jpeg_thumbnail(img)
 
 
 def encode_frame_thumbnail(frame: Any) -> bytes | None:
@@ -346,7 +371,7 @@ def encode_frame_thumbnail(frame: Any) -> bytes | None:
     importable — the call site stays unconditional and gracefully
     skips the thumbnail attribute.
 
-    Runs in a few ms/frame (2.42 ms measured at 320x240 q60); Pillow drops
+    Runs in a few ms/frame at 480x360 q80; Pillow drops
     the GIL for resize/encode. Callers range from the runner's throttled
     cadence to the deploy sensor pump's full ~30 Hz reader rate.
     """
@@ -377,9 +402,4 @@ def encode_frame_thumbnail(frame: Any) -> bytes | None:
             return None
     except Exception:
         return None
-    img.thumbnail((_THUMB_MAX_WIDTH, _THUMB_MAX_HEIGHT))
-    if img.mode != "RGB":
-        img = img.convert("RGB")
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=_THUMB_JPEG_QUALITY, optimize=True)
-    return buf.getvalue()
+    return _jpeg_thumbnail(img)

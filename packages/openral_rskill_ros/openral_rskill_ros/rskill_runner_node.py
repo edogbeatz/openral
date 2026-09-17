@@ -1480,7 +1480,16 @@ if _ROS2_AVAILABLE:
                 starting_pose=starting_pose,
             )
             if action.mode == "approach":
-                return self._dispatch_moveit_approach(action.pose)
+                from openral_msgs.action import ExecuteRskill
+
+                padded = self._hold_pad_pose_to_robot(list(action.pose))
+                if padded is None:
+                    return (
+                        int(ExecuteRskill.Result.FAILURE_CONFIG_ERROR),
+                        "ROSConfigError: starting_pose shorter than robot DoF and no "
+                        "proprio hold available for hold-pad before MoveIt approach.",
+                    )
+                return self._dispatch_moveit_approach(padded)
             if action.mode == "reset":
                 self._maybe_reset_hal_to_starting_pose(skill)
             return None
@@ -1605,6 +1614,44 @@ if _ROS2_AVAILABLE:
                 "completing — aborting (runaway guard)."
             )
 
+        def _hold_pad_pose_to_robot(self, pose: list[float]) -> list[float] | None:
+            """Hold-pad a short starting_pose to robot DoF from latest proprio.
+
+            Returns ``pose`` unchanged when widths already match. Returns
+            ``None`` (caller skips the reset) when the robot DoF is unknown or
+            proprio is not yet a full-width hold vector — better than sending
+            a short ResetToPose the HAL will reject, or zero-padding an arm.
+            """
+            n_dof = len(self._description.joints) if self._description is not None else 0
+            if n_dof == 0 or len(pose) == n_dof:
+                return pose
+            if len(pose) > n_dof:
+                self.get_logger().warning(
+                    f"starting_pose length {len(pose)} exceeds robot DoF {n_dof}; "
+                    "skipping ResetToPose."
+                )
+                return None
+            hold: list[float] | None = None
+            if self._aggregator is not None:
+                js = self._aggregator.snapshot().joint_state
+                if js is not None and len(js.position) == n_dof:
+                    hold = [float(v) for v in js.position]
+            if hold is None:
+                self.get_logger().warning(
+                    f"starting_pose is {len(pose)}-D but robot has {n_dof} joints and "
+                    "no full-width proprio hold is available yet; skipping ResetToPose."
+                )
+                return None
+            from openral_rskill_ros._hold_pad import hold_pad_joint_targets
+
+            limits = [
+                (float(j.position_limits[0]), float(j.position_limits[1]))
+                if j.position_limits is not None
+                else None
+                for j in self._description.joints
+            ]
+            return hold_pad_joint_targets(pose, n_dof=n_dof, hold=hold, limits=limits)
+
         def _maybe_reset_hal_to_starting_pose(self, skill: Any) -> None:
             """Call the HAL's ResetToPose service if the manifest declares one.
 
@@ -1613,9 +1660,10 @@ if _ROS2_AVAILABLE:
             empty, i.e. disabled). The OpenArm e2e launch sets it to
             ``/openral/openarm/reset_to_pose``; HALs that don't expose
             a pose-reset service leave it empty. Likewise, a manifest
-            with no ``starting_pose`` (or one whose length doesn't
-            match the robot's DoF count) is a no-op — only an explicit
-            maintainer-declared pose triggers a reset.
+            with no ``starting_pose`` is a no-op — only an explicit
+            maintainer-declared pose triggers a reset. A short pose
+            (leg-only policy on go2_z1) is hold-padded to robot DoF from
+            latest proprio before the service call.
             """
             service_name: str = (
                 self.get_parameter("reset_to_pose_service").get_parameter_value().string_value
@@ -1625,6 +1673,9 @@ if _ROS2_AVAILABLE:
             manifest = getattr(skill, "manifest", None)
             pose = getattr(manifest, "starting_pose", None) if manifest is not None else None
             if not pose:
+                return
+            pose_list = self._hold_pad_pose_to_robot([float(v) for v in pose])
+            if pose_list is None:
                 return
             try:
                 from openral_msgs.srv import ResetToPose
@@ -1643,7 +1694,7 @@ if _ROS2_AVAILABLE:
                     )
                     return
                 req = ResetToPose.Request()
-                req.pose = [float(v) for v in pose]
+                req.pose = pose_list
                 future = client.call_async(req)
                 # Block until the service responds. The action server's
                 # execute_cb already runs on a worker thread, so the
@@ -3098,6 +3149,7 @@ def _make_policy_adapter_skill(
             self._horizon_ticks = optional_positive_int(extras.get("horizon_ticks"))
             self._horizon_started: float | None = None
             self._horizon_ticks_ran = 0
+            self._hold_pad_pose: list[float] | None = None
             # Hold the full manifest so the F1 skill_runner can read
             # fields the rSkillBase ABC doesn't expose (e.g.
             # ``starting_pose`` for the HAL ResetToPose call before
@@ -3132,16 +3184,26 @@ def _make_policy_adapter_skill(
         def apply_goal_params_json(self, goal_params_json: str) -> None:
             """Apply a per-``execute_rskill`` ``goal_params_json`` override.
 
-            ``rsl_rl_onnx`` reads ``velocity_commands`` here so a resident
-            skill can change ``[vx, vy, yaw]`` without editing YAML. Empty
-            payload restores the load-time default.
+            ``rsl_rl_onnx`` reads ``velocity_commands``; the scripted ``zero``
+            family reads ``pose`` / ``arm``. Empty payload restores the
+            load-time default on a resident skill.
+
+            Also resets the scripted-horizon clock. A reused resident skill
+            skips ``activate()``, so without this a second ``execute_rskill``
+            after ``horizon_s`` already elapsed would raise
+            ``ROSRskillGoalSatisfied`` on the first tick.
             """
+            self._horizon_started = None
+            self._horizon_ticks_ran = 0
             from openral_sim.policies.rsl_rl_onnx import apply_velocity_command_override
 
             override = apply_velocity_command_override(self._adapter, goal_params_json)
             self._velocity_commands_override = (
                 None if override is None else [float(v) for v in override.tolist()]
             )
+            from openral_sim.policies.mock import apply_zero_pose_override
+
+            apply_zero_pose_override(self._adapter, goal_params_json)
 
         def _configure_impl(self) -> None:
             """No-op — `make_policy` already built the adapter."""
@@ -3176,6 +3238,10 @@ def _make_policy_adapter_skill(
             """Reset the adapter's per-episode state (action queue, RNG)."""
             self._horizon_started = None
             self._horizon_ticks_ran = 0
+            # Freeze short-action hold-pad once per episode. Chasing live
+            # proprio every tick lets base motion walk an idle arm (go2_z1)
+            # off home until the carrier tips.
+            self._hold_pad_pose: list[float] | None = None
             if hasattr(self._adapter, "reset"):
                 self._adapter.reset()  # type: ignore[attr-defined]
 
@@ -3472,10 +3538,49 @@ def _make_policy_adapter_skill(
                         robot_action[i] = lo_safe
                     elif robot_action[i] > hi_safe:
                         robot_action[i] = hi_safe
+            # A leg-only policy (e.g. 12-D Go2 rsl-rl) on a longer robot
+            # (go2_z1 = 19) must still publish chunk.n_dof == envelope.n_dof.
+            # Hold-pad trailing joints from a per-episode frozen proprio
+            # snapshot — never zeros (Z1 position servos would fold to
+            # joint=0) and never re-read live proprio each tick (base
+            # acceleration would walk the idle arm off home). Clamp the
+            # held joints to the envelope; also clamp the short policy row
+            # against the leading joint limits (the whole-vector clamp
+            # above only runs when widths already match).
+            targets = list(map(float, robot_action))
+            if description is not None and len(targets) < len(description.joints):
+                from openral_rskill_ros._hold_pad import hold_pad_joint_targets
+
+                if self._hold_pad_pose is None and len(js.position) == len(description.joints):
+                    self._hold_pad_pose = list(map(float, js.position))
+                hold = self._hold_pad_pose
+                if hold is not None and len(hold) == len(description.joints):
+                    limits = [
+                        (float(j.position_limits[0]), float(j.position_limits[1]))
+                        if j.position_limits is not None
+                        else None
+                        for j in description.joints
+                    ]
+                    clamp_eps = 1e-3
+                    for i, lims in enumerate(limits[: len(targets)]):
+                        if lims is None:
+                            continue
+                        lo_safe = lims[0] + clamp_eps
+                        hi_safe = lims[1] - clamp_eps
+                        if targets[i] < lo_safe:
+                            targets[i] = lo_safe
+                        elif targets[i] > hi_safe:
+                            targets[i] = hi_safe
+                    targets = hold_pad_joint_targets(
+                        targets,
+                        n_dof=len(description.joints),
+                        hold=hold,
+                        limits=limits,
+                    )
             return Action(
                 control_mode=ControlMode.JOINT_POSITION,
                 horizon=1,
-                joint_targets=[list(map(float, robot_action))],
+                joint_targets=[targets],
             )
 
     skill = _PolicyAdapterSkill()

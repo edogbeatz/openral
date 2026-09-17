@@ -36,6 +36,9 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_layout test/test_layout.py
     TIMEOUT 30
   )
+  ament_add_pytest_test(test_mesh_uris test/test_mesh_uris.py
+    TIMEOUT 30
+  )
 endif()
 
 ament_package()

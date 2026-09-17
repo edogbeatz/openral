@@ -132,6 +132,10 @@ class TestGo2Description:
         assert desc.sensors[0].name == "front"
         assert desc.sensors[0].sim_placement is not None
         assert desc.sensors[0].sim_placement.parent_body == "base"
+        assert desc.sensors[1].name == "top"
+        assert desc.sensors[1].vla_feature_key is None
+        assert desc.sensors[1].sim_placement is not None
+        assert desc.sensors[1].sim_placement.parent_body == "base"
 
     def test_joint_names_match_menagerie_order(self) -> None:
         names = [j.name for j in GO2_DESCRIPTION.joints]
@@ -262,6 +266,30 @@ class TestReadState:
         for name, q, home in zip(state.name, state.position, GO2_HOME_JOINT_TARGETS, strict=True):
             assert abs(q - home) < 1e-3, f"{name} initial {q} != home {home}"
 
+    def test_idle_step_holds_home_stand(self, connected_hal: Go2MujocoHAL) -> None:
+        """Idle ticks must PD-hold Hub stand, not apply position-as-torque.
+
+        ``go2_bench`` never sends an action. The deploy idle stepper used to
+        leave ``ctrl`` at the home *angles*, which on torque motors folds
+        calves into their stops (thigh ~2 rad, calf ~-2.72).
+        """
+        # 2000 * 0.002 s ≈ 4 s of idle — enough to reproduce the fold.
+        for _ in range(2000):
+            assert connected_hal.idle_step() is True
+        state = connected_hal.read_state()
+        for name, q, home in zip(state.name, state.position, GO2_HOME_JOINT_TARGETS, strict=True):
+            assert abs(q - home) < 5e-2, f"{name} idle-drifted to {q:.4f} (home {home})"
+        xyz, _quat = connected_hal.base_pose_6dof()
+        assert xyz[2] > 0.2, f"base height {xyz[2]:.3f} m — folded, not standing"
+
+    def test_reset_to_pose_then_idle_holds_home(self, connected_hal: Go2MujocoHAL) -> None:
+        connected_hal.reset_to_pose(list(GO2_HOME_JOINT_TARGETS))
+        for _ in range(500):
+            assert connected_hal.idle_step() is True
+        state = connected_hal.read_state()
+        for name, q, home in zip(state.name, state.position, GO2_HOME_JOINT_TARGETS, strict=True):
+            assert abs(q - home) < 5e-2, f"{name} after reset+idle {q:.4f} (home {home})"
+
 
 class TestSendAction:
     def test_rejects_wrong_joint_count(self, connected_hal: Go2MujocoHAL) -> None:
@@ -293,6 +321,38 @@ class TestClosedLoopMujoco:
             assert abs(state.position[i] - GO2_HOME_JOINT_TARGETS[i]) < 8e-2, (
                 f"joint {state.name[i]!r} moved away from home"
             )
+
+
+class TestFrontCamera:
+    """Spliced front RGB must render a readable scene, not a flat gray slab."""
+
+    def test_front_frame_has_textured_ground(self, connected_hal: Go2MujocoHAL) -> None:
+        import numpy as np
+
+        frames = connected_hal.read_images()
+        assert "front" in frames
+        img = np.asarray(frames["front"])
+        assert img.shape == (480, 640, 3)
+        # The old camrig floor was a finite flat-gray patch under a black void.
+        # Foxglove's Image panel swallowed the void and the remaining slab
+        # looked like a zoomed-in close-up. Checker + skybox must produce
+        # spatial variation on the ground and a non-black sky.
+        top = img[: img.shape[0] // 2]
+        bot = img[img.shape[0] // 2 :].mean(axis=2)
+        assert float(bot.max() - bot.min()) > 40.0  # light vs dark tiles
+        assert float(top.mean()) > 20.0  # skybox, not void that Foxglove swallows
+
+    def test_top_frame_shows_the_robot(self, connected_hal: Go2MujocoHAL) -> None:
+        import numpy as np
+
+        frames = connected_hal.read_images()
+        assert "top" in frames
+        img = np.asarray(frames["top"])
+        assert img.shape == (480, 640, 3)
+        # Third-person view: the robot occupies the centre. A sky/floor-only
+        # frame is cooler and darker there than the light-gray Go2 mesh.
+        center = img[200:280, 280:360]
+        assert float(center.mean()) > 90.0
 
 
 class TestGo2BaseProprio:

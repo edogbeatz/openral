@@ -8,7 +8,7 @@ See also: `CLAUDE.md §7.4` for the normative license matrix and `CLAUDE.md §6.
 
 ## 1. Robots (primary reference embodiments)
 
-The full set of **18** integrated `RobotDescription` manifests — with HAL
+The full set of integrated `RobotDescription` manifests — with HAL
 modules and per-robot status — lives in
 [docs/reference/robots.md](robots.md). The two rows below detail the
 observation/action **control contract** for the two most-exercised sim
@@ -48,6 +48,8 @@ Embodiment tags are short strings that appear in `rskill.yaml` under `embodiment
 | `aloha` | Aloha bimanual teleoperation setup | 2 × 7 | [ACT paper](https://arxiv.org/abs/2304.13705) (Stanford / Toyota) | Bimanual; two Viperx arms with overhead + wrist cameras |
 | `aloha_agilex` | ALOHA-AgileX dual-arm (RoboTwin 2.0) | 2 × 7 | [RoboTwin 2.0](https://arxiv.org/abs/2506.18088) | Bimanual SAPIEN benchmark embodiment; targeted by `smolvla-robotwin` |
 | `mobile_base` | Differential/omni mobile base (Nav2) | — | Nav2 stack | Navigation embodiment for `rskill-nav2-navigate-to-pose` (result-only, publishes `/cmd_vel`) |
+| `go2` | Unitree Go2 quadruped (also Go2 + Z1 composite) | 12 legs (`go2_z1` is 19-DoF; locomotion skill is still 12-D) | Isaac Lab / Unitree rsl-rl | Proprio-only `JOINT_POSITION`; `rsl_rl_onnx` family. Composite hold-pads 12→19. |
+| `go2_z1` | Unitree Go2 + Z1 sim composite | 12 legs + 6 arm + jaw | menagerie Z1 on Go2 `base` | Scripted `zero` family parks the arm (`rskill-zero-go2_z1-arm_ready-fp32`). Same rsl-rl locomotion as `go2`. |
 | `koch` | Koch arm | 6 | [lerobot/koch](https://huggingface.co/datasets/lerobot/koch) | Low-cost leader-follower arm |
 | `piper` | Agilex Piper arm | 6 | ISdept dataset | Mid-range research arm from Agilex |
 
@@ -184,6 +186,15 @@ therefore not packaged as an rSkill and cannot be claimed as real-robot ready.
 |---|---|---|---|---|---|---|---|---|
 | Organizer GR00T N1.7 `turning_on_radio` checkpoint ([baseline](https://behavior.stanford.edu/challenge/baselines.html)) | OmniGibson / Isaac Sim | `r1pro` | **61-D** official R1Pro proprio order | 224² RGB under the official `DefaultWrapper` (`RGBDFullResWrapper` crashes at boot on the pinned OmniGibson build — it reads joint state before the physics views exist) | **23-D** base velocity (3) + torso (4) + arms (7+7) + symmetric grippers (1+1) | `rskills/gr00t-n17-b1k-turning-on-radio` | **Unknown** for the organizer Drive artifact | Runs through `openral behavior serve`, `openral sim run`, `openral benchmark run --suite behavior`, or the full `openral deploy sim` graph. Deploy preserves the 61-D state and commits all six safety-approved typed slots as one simulator step. |
 
+### 3.12 Go2 locomotion (MuJoCo digital twin)
+
+Not a VLM. `model_family: rsl_rl_onnx` — proprio-only Isaac Lab / Unitree rsl-rl ONNX, in-process ONNX Runtime, 12-D `JOINT_POSITION`.
+
+| Policy | Sim env | Robot tag | State dim | Cameras | Action | rSkill | License | Notes |
+|---|---|---|---|---|---|---|---|---|
+| `diasAiMaster/unitree-go2-velocity-flat` | MuJoCo (`Go2MujocoHAL` / `Go2Z1MujocoHAL`) | `go2` | rsl-rl obs (ang vel + projected gravity + cmd + joint_pos_rel + joint_vel_rel + last_action) | none (proprio only) | **12-D** `JOINT_POSITION` | `rskills/rsl-rl-onnx-go2-velocity-flat` | BSD-3-Clause | `scenes/deploy/go2_walk.yaml` (gravity on). Same skill on `go2_z1` via runner + HAL hold-pad 12→19 (`go2_z1_walk`). Does not claim gait quality. ACM on those scenes is stand-justified, not gait-swept. |
+| scripted `zero` (in-tree) | MuJoCo (`Go2Z1MujocoHAL`) | `go2_z1` | unused (open-loop hold) | none | **19-D** `JOINT_POSITION` | `rskills/rskill-zero-go2_z1-arm_ready-fp32` | Apache-2.0 | Parks the Z1 at `ready` / `home` / `fold`. Dashboard Recalibrate uses the `ready` pose; locomotion qpos-snaps that sticky hold (12-D or hold-padded 19-D walk). |
+
 ---
 
 ## 4. Sim Environment Reference
@@ -204,6 +215,7 @@ therefore not packaged as an rSkill and cannot be claimed as real-robot ready.
 | VLABench | MuJoCo | `uv sync --group vlabench` | Franka Panda | 97 tasks (`vlabench/*`) | TBD |
 | PushT | gym-pusht (`pymunk`, 2-D) | `uv sync --group sim` | PushT 2-D | `pusht/0` | 2-D top view |
 | gym-aloha | MuJoCo | `uv sync --group sim` | ALOHA bimanual | transfer-cube, insertion | overhead + wrist |
+| Go2 walk bench | MuJoCo (`openral deploy sim`) | `uv sync --group sim` | Unitree Go2 / Go2+Z1 | rsl-rl velocity-flat locomotion | spliced `front` + viz-only `top` (policy is proprio-only) |
 | Isaac Sim | Omniverse Isaac Sim | Requires NVIDIA Isaac Sim license | Franka Panda / Panda mobile | `isaac_sim/*` (e.g. bowl-on-plate) | multi-camera (scene-defined) |
 
 ### 4.1 LIBERO eval CLI

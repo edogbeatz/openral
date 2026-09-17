@@ -30,7 +30,7 @@ import threading
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Final
 
 from opentelemetry.proto.common.v1.common_pb2 import AnyValue, KeyValue
 from opentelemetry.proto.logs.v1.logs_pb2 import LogRecord, ResourceLogs
@@ -39,7 +39,45 @@ from opentelemetry.proto.trace.v1.trace_pb2 import ResourceSpans, Span
 
 from openral_observability import semconv
 
-__all__ = ["TelemetryEvent", "TelemetryStore"]
+__all__ = [
+    "HERO_CAMERA_KEYS",
+    "HERO_CAMERA_ROLES",
+    "TelemetryEvent",
+    "TelemetryStore",
+    "merge_hero_cameras",
+]
+
+# Go2 / Go2+Z1 HAL ``SensorSpec.name`` values the dashboard always mounts.
+# ``front`` is the snout/main camera; ``top`` is the menagerie ``track`` 3/4
+# side view (viz-only, no ``vla_feature_key``). These are the keys Foxglove
+# and the HAL publish — not invented slot names.
+HERO_CAMERA_KEYS: Final[tuple[str, ...]] = ("front", "top")
+HERO_CAMERA_ROLES: Final[dict[str, str]] = {"front": "main", "top": "side"}
+
+
+def merge_hero_cameras(cameras: dict[str, Any] | None) -> dict[str, Any]:
+    """Always include the Go2 main+side slots, then overlay live entries.
+
+    An empty store (WAITING, laptop collector with no OTLP) still returns
+    ``front`` / ``top`` so the page can render two labeled placeholders
+    instead of hiding the camera cell until the first ``sensors.read_latest``.
+    """
+    out: dict[str, Any] = {
+        key: {"modality": "rgb", "role": HERO_CAMERA_ROLES[key]} for key in HERO_CAMERA_KEYS
+    }
+    if not cameras:
+        return out
+    for key, value in cameras.items():
+        name = str(key)
+        if not isinstance(value, dict):
+            out[name] = value
+            continue
+        entry = dict(value)
+        role = HERO_CAMERA_ROLES.get(name)
+        if role and not entry.get("role"):
+            entry["role"] = role
+        out[name] = entry
+    return out
 
 _EVENT_RING_SIZE = 200
 # A SEPARATE, protected ring for error/fatal events. The main ring is a single
@@ -428,8 +466,10 @@ class TelemetryStore:
             # ``sensors.read_latest`` spans. ``overlays`` — per-camera detector
             # boxes / segmenter masks, fed by ``PerceptionOverlaySubscriber``
             # (live rclpy, not OTel) and keyed by the SAME camera name, which is
-            # what lets the frontend draw one on top of the other.
-            "perception": {},
+            # what lets the frontend draw one on top of the other. Hero slots
+            # (Go2 ``front`` + ``top``) are seeded empty so WAITING still
+            # shows two labeled panels.
+            "perception": {"cameras": merge_hero_cameras(None)},
             "inference": {},
             # ``estopped`` tracks the kernel's e-stop latch so the UI shows an
             # E-STOP control while running and Reset e-stop while latched.
@@ -565,10 +605,17 @@ class TelemetryStore:
 
     # ── Reader-facing API ──────────────────────────────────────────────
 
-    def snapshot(self) -> dict[str, Any]:
-        """Return a plain-dict snapshot of the current state."""
+    def snapshot(self, *, include_camera_thumbs: bool = True) -> dict[str, Any]:
+        """Return a plain-dict snapshot of the current state.
+
+        ``include_camera_thumbs`` keeps the JPEG preview on ``/api/state``
+        (and for MJPEG via ``_camera_thumb``). SSE publishes with this
+        False — the tiles already stream ``/api/camera/{source}/stream``,
+        and shipping two base64 JPEGs on every telemetry tick is what made
+        the laptop dashboard feel like a slideshow.
+        """
         with self._lock:
-            return self._snapshot_locked()
+            return self._snapshot_locked(include_camera_thumbs=include_camera_thumbs)
 
     def set_estopped(self, value: bool) -> None:
         """Force the e-stop latch flag from an authoritative operator action.
@@ -1033,6 +1080,9 @@ class TelemetryStore:
                 "age_ms": attrs.get("openral.sensors.age_ms"),
             }
             existing = per_camera.get(source, {})
+            role = HERO_CAMERA_ROLES.get(source)
+            if role:
+                entry["role"] = role
             thumb = attrs.get("openral.sensors.thumbnail_jpeg_b64")
             if thumb:
                 # Persist the thumb until a newer one arrives so the
@@ -1348,7 +1398,7 @@ class TelemetryStore:
         merged.sort(key=lambda e: e.ts_unix, reverse=True)
         return merged
 
-    def _snapshot_locked(self) -> dict[str, Any]:
+    def _snapshot_locked(self, *, include_camera_thumbs: bool = False) -> dict[str, Any]:
         return {
             "service_name": self._primary_service(),
             "services": sorted(self._services),
@@ -1358,7 +1408,9 @@ class TelemetryStore:
             "last_ingest_ts": self._last_ingest_ts,
             "now_unix": time.time(),
             "identity": dict(self._identity),
-            "topics": _deep_copy_topics(self._topics),
+            "topics": _deep_copy_topics(
+                self._topics, include_camera_thumbs=include_camera_thumbs
+            ),
             "cards": {k: v.to_json() for k, v in self._cards.items()},
             "events": [e.to_json() for e in self._merged_events()],
             "counters": dict(self._counters),
@@ -1386,21 +1438,34 @@ def _offer(queue: asyncio.Queue[dict[str, Any]], payload: dict[str, Any]) -> Non
         queue.put_nowait(payload)
 
 
-def _deep_copy_topics(topics: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+def _deep_copy_topics(
+    topics: dict[str, dict[str, Any]],
+    *,
+    include_camera_thumbs: bool = True,
+) -> dict[str, dict[str, Any]]:
     """Shallow-deep copy: one level per topic so the JSON snapshot is a fresh tree."""
     out: dict[str, dict[str, Any]] = {}
     for topic, bucket in topics.items():
         # Use json round-trip to detach from store internals; bucket values
         # are plain dicts/lists/strings/numbers/floats so this is cheap.
-        out[topic] = {k: _copy_nested(v) for k, v in bucket.items()}
+        drop_thumbs = (not include_camera_thumbs) and topic == "perception"
+        copied = {k: _copy_nested(v, drop_thumbs=drop_thumbs) for k, v in bucket.items()}
+        if topic == "perception":
+            raw = copied.get("cameras")
+            copied["cameras"] = merge_hero_cameras(raw if isinstance(raw, dict) else None)
+        out[topic] = copied
     return out
 
 
-def _copy_nested(v: Any) -> Any:
+def _copy_nested(v: Any, *, drop_thumbs: bool = False) -> Any:
     if isinstance(v, dict):
-        return {k: _copy_nested(x) for k, x in v.items()}
+        return {
+            k: _copy_nested(x, drop_thumbs=drop_thumbs)
+            for k, x in v.items()
+            if not (drop_thumbs and k == "thumbnail_jpeg_b64")
+        }
     if isinstance(v, list):
-        return [_copy_nested(x) for x in v]
+        return [_copy_nested(x, drop_thumbs=drop_thumbs) for x in v]
     return v
 
 
@@ -1591,8 +1656,10 @@ def _summarise_span(name: str, attrs: dict[str, Any], duration_ms: float) -> str
         "rskill.id",
         "openral.skill.id",
         "openral.hal.adapter",
+        semconv.SENSORS_SOURCE,
         "openral.sensors.modality",
         "safety.check_name",
+        semconv.SAFETY_SEVERITY,
         "openral.tick.idx",
         "inference.chunk_index",
         # A scene-objects row without the count reads as a bare name; with

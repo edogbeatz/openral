@@ -47,7 +47,7 @@ We compose ROS 2, tf2, MoveIt 2 (with optional CUDA-accelerated **cuMotion** pla
 
 **Shipped today** (every workspace package ships at one lockstep version — see the PyPI badge):
 - `openral_core` schemas + the `openral` CLI (bare `openral` drops into a REPL)
-- HAL adapters for [15+ robot platforms](docs/reference/robots.md) — manipulators, mobile manipulators, bimanual arms, humanoids
+- HAL adapters for [15+ robot platforms](docs/reference/robots.md) — manipulators, mobile manipulators, bimanual arms, humanoids, quadrupeds
 - [Sensor catalog](docs/reference/sensors_landscape.md) — RGB-D, F/T, and USB-UVC adapters
 - `WorldStateAggregator` — 30 Hz tf2-aware snapshot with lifted object detections
 - [rSkill packages](docs/reference/rskills.md) spanning every kind — VLA policies (SmolVLA, π0.5, xVLA, MolmoAct2, ACT, Diffusion Policy, 3D Diffuser Actor, RLDX-1, OpenVLA-OFT, GR00T N1.7), open-vocabulary detectors (RT-DETR, OmDet-Turbo, LocateAnything), the Qwen3.5-4B scene VLM (`kind: vlm`), the Robometer-4B reward/progress monitor (`kind: reward`), MoveIt / Nav2 classical-control skills (`kind: ros_action`), and human-authored reasoner playbooks (`kind: playbook`)
@@ -257,7 +257,7 @@ flowchart TB
         RSKILL["<b>3 · rSkill</b><br/>VLA visuomotor policy<br/>SmolVLA · π0.5 · GR00T N1.7 · ACT · DP"]
     end
 
-    HAL["<b>0 · HAL</b> — 15+ robot adapters<br/>SO-100 · Franka · UR5e · ALOHA · G1"]
+    HAL["<b>0 · HAL</b> — 15+ robot adapters<br/>SO-100 · Franka · UR5e · ALOHA · G1 · Go2"]
     SENSORS["<b>1 · Sensors</b> — RGB-D · F/T · IMU → ROS 2 topics"]
     WORLD["<b>2 · World State</b> — tf2 snapshot @ 30 Hz<br/>+ lifted detected_objects"]
     SAFETY["<b>6 · Safety</b> — C++ kernel, deny-by-default<br/>E-stop on fault"]
@@ -350,7 +350,7 @@ Full toolchain: [docs/contributing/toolchain.md](docs/contributing/toolchain.md)
 
 ## Robot descriptions
 
-15+ robot platforms are supported, from low-cost manipulators to mobile manipulators, bimanual arms and humanoids. Each is a typed `RobotDescription` manifest under `robots/<robot_id>/robot.yaml`.
+15+ robot platforms are supported, from low-cost manipulators to mobile manipulators, bimanual arms, humanoids and quadrupeds. Each is a typed `RobotDescription` manifest under `robots/<robot_id>/robot.yaml`.
 
 → **Full table:** [docs/reference/robots.md](docs/reference/robots.md)
 

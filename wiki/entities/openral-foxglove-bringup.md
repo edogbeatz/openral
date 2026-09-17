@@ -1,7 +1,7 @@
 ---
 type: entity
 tags: [openral, foxglove, visualization, ros2]
-updated: 2026-09-16
+updated: 2026-09-17
 ---
 
 # openral_foxglove_bringup
@@ -77,6 +77,9 @@ that are in the file, not in the viewer's defaults:
   (`_rgb_image_frame_id` in `openral_hal.sim_sensor_bridge`).
 - `_order_layout_cameras` promotes a `top` slot to the first panel — an
   egocentric camera cannot show the body.
+- `openral deploy sim --foxglove` points Image panels at `/compressed`
+  (~10× smaller than raw 640×480 RGB8) and spawns the republishers.
+  Re-import the generated JSON after this change.
 
 Full session write-up: [[analyses/foxglove-web-meshes-need-package-uri]].
 

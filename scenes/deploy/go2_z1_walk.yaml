@@ -1,0 +1,103 @@
+# Unitree Go2 + Z1 walk bench — same locomotion skill as bare go2_walk.
+#
+# Gravity-ON composite twin. The arm is part of the robot
+# (`robots/go2_z1/robot.yaml` `scene_defaults.composition` →
+# `compose_mounted_arm_mjcf` with `ground: true`), so this scene does NOT
+# set a scene-level `composition:` — that would replace the arm mount with
+# a bare ground plane and lose the Z1.
+#
+# Same rsl-rl ONNX velocity policy as `scenes/deploy/go2_walk.yaml`. The
+# runner/HAL pin the arm at the sticky Recalibrate / arm-ready hold (not
+# proprio-chase). Robot composition
+# uses `arm_mass_scale: 0.01` so the bare-Go2 policy stays upright — full Z1
+# menagerie mass tips within a few metres. Hold-pad path for the 12-D action:
+#
+#   openral deploy sim --config scenes/deploy/go2_z1_walk.yaml --dashboard --foxglove
+#   ros2 action send_goal /openral/execute_rskill openral_msgs/action/ExecuteRskill \
+#     "{rskill_id: 'OpenRAL/rskill-rsl_rl_onnx-go2-velocity_flat-fp32', \
+#       goal_params_json: '{\"velocity_commands\": [0.5, 0.0, 0.0]}', \
+#       deadline_s: 30.0}"
+#
+# `deploy run` is refused (`hal.real` is null). Sim-only.
+hal:
+  defaults:
+    gravity_enabled: true
+    # Same proprio freshness cliff as go2_walk — see that scene's comment.
+    publish_rate_hz: 200.0
+    odom_publish_rate_hz: 200.0
+
+# ACM: Go2 Hub-stand 38 pairs (same justification as go2_walk) plus
+# arm↔carrier pairs that overlap at Hub + Z1 home. Stand-justified only;
+# not gait-swept. Sim-only containment (`hal.real: null`).
+extra_allowed_collision_pairs:
+  - [base, FL_calf]
+  - [base, FR_calf]
+  - [base, RL_calf]
+  - [base, RR_calf]
+  - [FL_hip, FL_calf]
+  - [FR_hip, FR_calf]
+  - [RL_hip, RL_calf]
+  - [RR_hip, RR_calf]
+  - [FL_thigh, FR_thigh]
+  - [RL_thigh, RR_thigh]
+  - [base, FL_thigh]
+  - [base, FR_thigh]
+  - [base, RL_thigh]
+  - [base, RR_thigh]
+  - [FL_calf, FR_thigh]
+  - [FL_calf, RL_thigh]
+  - [FL_calf, RR_thigh]
+  - [FR_calf, FL_thigh]
+  - [FR_calf, RL_thigh]
+  - [FR_calf, RR_thigh]
+  - [RL_calf, FL_thigh]
+  - [RL_calf, FR_thigh]
+  - [RL_calf, RR_thigh]
+  - [RR_calf, FL_thigh]
+  - [RR_calf, FR_thigh]
+  - [RR_calf, RL_thigh]
+  - [FL_calf, FR_hip]
+  - [FL_calf, RL_hip]
+  - [FL_calf, RR_hip]
+  - [FR_calf, FL_hip]
+  - [FR_calf, RL_hip]
+  - [FR_calf, RR_hip]
+  - [RL_calf, FL_hip]
+  - [RL_calf, FR_hip]
+  - [RL_calf, RR_hip]
+  - [RR_calf, FL_hip]
+  - [RR_calf, FR_hip]
+  - [RR_calf, RL_hip]
+  # Contralateral calves: Hub stand never overlaps these, but the rsl-rl
+  # gait (and the Z1's extra torso mass) briefly drives FL_calf↔FR_calf
+  # ~5 mm into each other mid-stride. Admit them here so the kernel does
+  # not estop an otherwise-healthy walk; same sim-only containment as the
+  # stand ACM above. RL↔RR mirrored for the hind pair.
+  - [FL_calf, FR_calf]
+  - [RL_calf, RR_calf]
+  # Ipsilateral front↔hind calves: measured FR_calf↔RR_calf −17 mm mid-gait
+  # on go2_z1_walk (tick ~169) which latched estop and dropped the dog.
+  - [FR_calf, RR_calf]
+  - [FL_calf, RL_calf]
+  # No arm↔carrier ACM pairs here: deploy lowers self-collision from the
+  # bare `rd:go2_mj_description` MJCF (arm is composed only at HAL build),
+  # so Z1 link names are not valid collision links at kernel boot.
+scene:
+  id: go2_z1_walk
+robot_id: go2_z1
+runtime:
+  enable_slam: false
+  enable_nav2: false
+  enable_octomap: false
+  enable_octomap_kernel_check: true
+  enable_object_detector: false
+  object_detector_onnx: null
+  object_detector_manifest: null
+  object_detector_query: null
+  object_detector_locators: null
+  enable_reward_monitor: false
+  reward_monitor_manifest: null
+  reward_monitor_task: null
+  enable_critic: false
+  spatial_memory_ingest: false
+  approach_skill_id: null

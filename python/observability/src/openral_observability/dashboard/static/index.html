@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>OpenRAL · Live Dashboard</title>
 <link rel="stylesheet" href="/static/fonts/fonts.css" />
-<link rel="stylesheet" href="/static/dashboard.css" />
+<link rel="stylesheet" href="/static/dashboard.css?v=cam2" />
 </head>
 <body>
 
@@ -28,20 +28,22 @@
 
 <main>
 
-  <!-- ========== IDENTITY (immutable) — demoted to a thin readout strip ========== -->
+  <!-- ========== IDENTITY (immutable) — demoted to a thin readout strip ==========
+       Every pair starts `hidden`; renderIdentity reveals the ones this run
+       actually reports, so an arm deploy never shows a row of em-dashes. -->
   <div class="idbar" id="idbar">
-    <div class="pair"><span class="k">service</span><span class="v empty" id="id-service">—</span></div>
-    <div class="pair"><span class="k">run mode</span><span class="v empty" id="id-runmode">—</span></div>
-    <div class="pair"><span class="k">run id</span><span class="v empty" id="id-runid">—</span></div>
-    <div class="pair"><span class="k">git sha</span><span class="v empty" id="id-gitsha">—</span></div>
-    <div class="pair"><span class="k">robot</span><span class="v empty" id="id-robot">—</span></div>
-    <div class="pair"><span class="k">hal adapter</span><span class="v empty" id="id-hal">—</span></div>
-    <div class="pair"><span class="k">control mode</span><span class="v empty" id="id-ctrl">—</span></div>
-    <div class="pair"><span class="k">skill id</span><span class="v empty" id="id-skill">—</span></div>
-    <div class="pair"><span class="k">skill role</span><span class="v empty" id="id-skillrole">—</span></div>
-    <div class="pair"><span class="k">engine · device</span><span class="v empty" id="id-engine">—</span></div>
-    <div class="pair"><span class="k">chunk size</span><span class="v empty" id="id-chunk-size">—</span></div>
-    <div class="pair"><span class="k">safety kernel</span><span class="v empty" id="id-kernel">—</span></div>
+    <div class="pair" hidden><span class="k">service</span><span class="v empty" id="id-service">—</span></div>
+    <div class="pair" hidden><span class="k">run mode</span><span class="v empty" id="id-runmode">—</span></div>
+    <div class="pair" hidden><span class="k">run id</span><span class="v empty" id="id-runid">—</span></div>
+    <div class="pair" hidden><span class="k">git sha</span><span class="v empty" id="id-gitsha">—</span></div>
+    <div class="pair" hidden><span class="k">robot</span><span class="v empty" id="id-robot">—</span></div>
+    <div class="pair" hidden><span class="k">hal adapter</span><span class="v empty" id="id-hal">—</span></div>
+    <div class="pair" hidden><span class="k">control mode</span><span class="v empty" id="id-ctrl">—</span></div>
+    <div class="pair" hidden><span class="k">skill id</span><span class="v empty" id="id-skill">—</span></div>
+    <div class="pair" hidden><span class="k">skill role</span><span class="v empty" id="id-skillrole">—</span></div>
+    <div class="pair" hidden><span class="k">engine · device</span><span class="v empty" id="id-engine">—</span></div>
+    <div class="pair" hidden><span class="k">chunk size</span><span class="v empty" id="id-chunk-size">—</span></div>
+    <div class="pair" hidden><span class="k">safety kernel</span><span class="v empty" id="id-kernel">—</span></div>
   </div>
 
   <!-- ========== COMMAND BAND: operator prompt + E-stop + safety counters (always visible) ========== -->
@@ -59,7 +61,55 @@
         <button id="estop-btn" type="button" class="trigger" data-mode="trigger" title="Stop the robot NOW. Publishes /openral/estop so the kernel and HAL latch.">⛔ E-STOP</button>
         <span id="prompt-status" class="status"></span>
       </div>
-      <div class="prompt-hint">Hit <b>E-STOP</b> to latch the safety kernel and drop every command. It becomes <b>Reset e-stop</b>; click it, then send a new prompt to resume.</div>
+      <!--
+        Run skill — fallback strip when write-controls are on but the Go2 demo
+        bar is not. Hidden whenever #card-demo is shown so operators never see
+        two dispatch buttons. POST /api/skill/execute; picker from GET /api/skills.
+      -->
+      <div class="runskill-bar" id="card-runskill" hidden>
+        <span class="lbl">run skill</span>
+        <select id="runskill-select" aria-label="rSkill to dispatch"></select>
+        <input id="runskill-id" type="text" spellcheck="false" autocomplete="off"
+               placeholder="rskill id (manifest name)" hidden />
+        <span class="runskill-params" id="runskill-params"></span>
+        <button id="runskill-go" type="button">▶ Run</button>
+        <span class="meta" id="runskill-mode">—</span>
+        <span class="status" id="runskill-status"></span>
+      </div>
+      <!--
+        Demo wizard (write-controls): Bare Go2 auto-calibrates after load
+        then select skill + Apply. Go2+Z1 asks for Recalibrate first.
+        One Apply button (no separate Run). Neither story auto-walks.
+        Start Cricket / End Cricket manage the GPU session; Stop keeps the sim.
+        Idle auto-stops cricket after OPENRAL_CRICKET_IDLE_S (default 15 min).
+      -->
+      <div class="demo-bar" id="card-demo" hidden>
+        <span class="lbl">demo</span>
+        <span class="demo-step" id="demo-step">1 · Choose robot</span>
+        <button type="button" id="demo-go2" data-preset="go2"
+          title="Cold-load the bare 12-DoF Go2 (no arm); auto-calibrates when up">Bare Go2</button>
+        <button type="button" id="demo-go2-z1" data-preset="go2_z1"
+          title="Cold-load Go2 with Z1 arm — Recalibrate is required next">Go2 + Z1</button>
+        <button type="button" id="demo-recal" disabled
+          title="Snap upright at Hub home — required on Go2+Z1 after load; also tip recovery">2 · Recalibrate</button>
+        <select id="demo-skill" aria-label="rSkill to apply" disabled></select>
+        <button type="button" id="demo-apply" disabled
+          title="Apply the selected skill (walk defaults to a gentle forward jog)">3 · Apply skill</button>
+        <button type="button" id="demo-stop" disabled
+          title="Cancel the running skill and hold Hub stand — does not latch E-STOP">Stop</button>
+        <button type="button" id="demo-stand" disabled
+          title="Tip recovery — upright snap while a skill is running">Stand</button>
+        <span class="demo-sep" aria-hidden="true"></span>
+        <button type="button" id="demo-cricket-start"
+          title="Start or attach the cricket GPU demo: brev start if stopped, tunnels, Foxglove ws://localhost:8765.">Start Cricket</button>
+        <button type="button" id="demo-cricket-end"
+          title="End the cricket GPU session: cancel skill (no E-STOP), stop the graph, stop billing. Distinct from Stop, which keeps the sim.">End Cricket</button>
+        <span class="meta demo-idle" id="demo-cricket-idle" hidden>auto-stop in —</span>
+        <span class="meta demo-cricket-links" id="demo-cricket-links" hidden></span>
+        <span class="meta" id="demo-hint">Choose Bare Go2 or Go2 + Z1</span>
+        <span class="status" id="demo-status"></span>
+      </div>
+      <div class="prompt-hint">Hit <b>Stop</b> to cancel the walk skill (hold stand; Apply again). <b>End Cricket</b> shuts the GPU session (not E-STOP). <b>E-STOP</b> latches the safety kernel. Demo: <b>Bare Go2</b> auto-calibrates then <b>select skill + Apply</b>. <b>Go2 + Z1</b> asks you to <b>Recalibrate</b> first. Idle auto-stops cricket after 15 min with no operator action.</div>
     </div>
 
     <!-- Safety alarm counters — compact, riding alongside the command line so a
@@ -91,28 +141,73 @@
   <!-- ========== WORKSPACE: main visual area (left) + instrument rail (right) ==========
        Big visual cards (cameras, reasoner, SLAM, pointcloud) fill the main area;
        the short list/gauge cards (rSkill, joints, system, ledger, world state)
-       stack in a narrow right rail at their natural height. -->
+       stack in a narrow right rail at their natural height.
+
+       Cameras are the exception to REVEAL_ON_FEED: Go2 main (`front`) and side
+       (`top`) stay mounted from first paint so WAITING is two labeled panels,
+       not an empty grid. Other optional cards still hide until their producer
+       speaks. Once revealed a card never re-hides. -->
   <div class="workspace">
 
-    <!-- MAIN VISUAL — 2×2: cameras · reasoner on top, SLAM · pointcloud enlarged below -->
-    <div class="main-visual">
+    <!-- MAIN VISUAL — cameras always live; reasoner · SLAM · pointcloud opt-in -->
+    <div class="main-visual" id="main-visual" data-live="1">
 
-      <!-- Perception cameras -->
-      <section class="mv-cam" id="cell-cameras">
+      <!-- Perception cameras — always shown (Go2 HAL keys: front = main, top = side) -->
+      <section id="cell-cameras">
         <h2>Perception · cameras</h2>
-        <div class="cameras scroll-y grow" id="cameras"></div>
+        <div class="cameras scroll-y grow" id="cameras" data-roster="front|top">
+          <div class="camera is-streaming" data-camera="front" data-role="main">
+            <div class="image-wrap">
+              <img alt="Main · front" src="/api/camera/front/stream" />
+              <div class="camera-placeholder">waiting for camera</div>
+              <canvas class="overlay"></canvas>
+              <span class="corner tl"></span><span class="corner tr"></span>
+              <span class="corner bl"></span><span class="corner br"></span>
+              <div class="crosshair"></div>
+              <div class="pill-row">
+                <span class="pill live-pill" style="display:none"></span>
+                <span class="pill neutral role-pill">main</span>
+              </div>
+              <div class="overlay-src"></div>
+            </div>
+            <div class="footer">
+              <span class="name">Main · front</span>
+              <span class="lat">—</span>
+              <span class="meta-sub dims">snout RGB · waiting</span>
+              <span class="meta-sub right fps"></span>
+            </div>
+          </div>
+          <div class="camera is-streaming" data-camera="top" data-role="side">
+            <div class="image-wrap">
+              <img alt="Side · top" src="/api/camera/top/stream" />
+              <div class="camera-placeholder">waiting for camera</div>
+              <canvas class="overlay"></canvas>
+              <span class="corner tl"></span><span class="corner tr"></span>
+              <span class="corner bl"></span><span class="corner br"></span>
+              <div class="crosshair"></div>
+              <div class="pill-row">
+                <span class="pill live-pill" style="display:none"></span>
+                <span class="pill neutral role-pill">side</span>
+              </div>
+              <div class="overlay-src"></div>
+            </div>
+            <div class="footer">
+              <span class="name">Side · top</span>
+              <span class="lat">—</span>
+              <span class="meta-sub dims">3/4 view · waiting</span>
+              <span class="meta-sub right fps"></span>
+            </div>
+          </div>
+        </div>
       </section>
 
       <!-- Reasoner · mission -->
-      <section class="card accent-skill mv-reason" id="card-reasoner">
+      <section class="card accent-skill" id="card-reasoner" hidden>
         <div class="hd">
           <span class="title">Reasoner · mission</span>
           <span class="age" id="reasoner-age">—</span>
         </div>
         <div id="reasoner-body" class="scroll-y grow">
-          <div class="empty-state" id="reasoner-empty">
-            waiting for reasoner.tick (the reasoner_node must be ACTIVE)
-          </div>
           <div id="reasoner-detail" style="display:none">
             <div class="mission-failed" id="reasoner-mission-failed" style="display:none"></div>
             <div class="mission-head" id="reasoner-mission-head"></div>
@@ -130,15 +225,12 @@
       </section>
 
       <!-- SLAM 2D map — enlarged -->
-      <section class="card accent-world mv-slam" id="card-slam-map">
+      <section class="card accent-world" id="card-slam-map" hidden>
         <div class="hd">
           <span class="title">SLAM · 2D map</span>
           <span class="age" id="slam-age">—</span>
         </div>
         <div id="slam-map-body" class="scroll-y grow">
-          <div class="empty-state" id="slam-empty">
-            waiting for slam.occupancy_grid (SLAM backend must publish /map)
-          </div>
           <div id="slam-image-wrap" style="display:none">
             <div id="slam-image-stage" style="position:relative;display:block;margin:0 auto">
               <img
@@ -165,15 +257,12 @@
       </section>
 
       <!-- WORLD POINTCLOUD · robot view (robot-perspective octomap pointcloud render) — enlarged -->
-      <section class="card accent-world mv-cloud" id="card-world-cloud">
+      <section class="card accent-world" id="card-world-cloud" hidden>
         <div class="hd">
           <span class="title">Pointcloud · robot view</span>
           <span class="age" id="world-cloud-age">—</span>
         </div>
         <div id="world-cloud-body" class="scroll-y grow">
-          <div class="empty-state" id="world-cloud-empty">
-            waiting for world.pointcloud (deploy with --enable-octomap)
-          </div>
           <div id="world-cloud-image-wrap" style="display:none">
             <img
               id="world-cloud-image"
@@ -206,7 +295,7 @@
       </div>
 
       <!-- Robot state · joints -->
-      <div class="card accent-robot robot rail-joints" id="card-robot-state">
+      <div class="card accent-robot robot rail-joints" id="card-robot-state" hidden>
         <div class="hd"><span class="title">Robot state · joints</span><span class="age" id="robot-state-age">—</span></div>
         <div class="joints scroll-y" id="joints"></div>
         <div class="joint-legend">
@@ -217,7 +306,7 @@
       </div>
 
       <!-- System health -->
-      <div class="card accent-system system" id="card-system">
+      <div class="card accent-system system" id="card-system" hidden>
         <div class="hd"><span class="title">System health</span><span class="age" id="sys-age">—</span></div>
         <div class="gauges" id="gauges"></div>
       </div>
@@ -253,8 +342,9 @@
   <!-- ========== STREAM BAND: metrics + event log (scroll inside their cards) ========== -->
   <div class="band band-stream">
 
-    <!-- METRICS -->
-    <section class="stream-cell" id="cell-metrics">
+    <!-- METRICS — hidden until the first histogram/counter/gauge lands, so an
+         uninstrumented run doesn't reserve half the viewport for a placeholder. -->
+    <section class="stream-cell" id="cell-metrics" hidden>
       <div class="stream-hd">
         <h2>Metrics</h2>
         <div class="filter-bar" id="metric-filters">
@@ -288,33 +378,35 @@
       </div>
     </section>
 
-    <!-- World state (+ durable spatial-memory scene-object graph) -->
-    <div class="card accent-world world stream-world" id="card-world-state">
+    <!-- World state (+ durable spatial-memory scene-object graph). The scene-object
+         half stays hidden until a world.scene_objects span lands; "0 objects
+         remembered" is a real reading and still shows. -->
+    <div class="card accent-world world stream-world" id="card-world-state" hidden>
       <div class="hd"><span class="title">World state</span><span class="age" id="ws-age">—</span></div>
       <div class="scroll-y grow">
         <div class="ws-attrs" id="ws-attrs"></div>
         <div class="ws-diag" id="ws-diag"></div>
-        <div class="ws-subhead">spatial memory · scene objects</div>
-        <div class="empty-state" id="scene-objects-empty">
-          waiting for world.scene_objects (preload a scene graph via spatial_memory_path, or merge the perception object-lift producer)
-        </div>
-        <div id="scene-objects-wrap" style="display:none">
-          <table style="width:100%;border-collapse:collapse;font-size:11.5px">
-            <thead>
-              <tr style="text-align:left;color:var(--text-dim)">
-                <th style="padding:2px 6px">object</th>
-                <th style="padding:2px 6px">position (m)</th>
-                <th style="padding:2px 6px">conf</th>
-                <th style="padding:2px 6px">seen</th>
-                <th style="padding:2px 6px">obs</th>
-              </tr>
-            </thead>
-            <tbody id="scene-objects-rows"></tbody>
-          </table>
-          <div class="meta-row" id="scene-objects-meta" style="margin-top:6px;display:flex;gap:18px;flex-wrap:wrap;font-size:11.5px;color:var(--text-dim)">
-            <span id="scene-objects-count"></span>
-            <span id="scene-objects-frame"></span>
-            <span id="scene-objects-source"></span>
+        <div id="scene-objects-section" hidden>
+          <div class="ws-subhead">spatial memory · scene objects</div>
+          <div class="empty-state" id="scene-objects-empty"></div>
+          <div id="scene-objects-wrap" style="display:none">
+            <table style="width:100%;border-collapse:collapse;font-size:11.5px">
+              <thead>
+                <tr style="text-align:left;color:var(--text-dim)">
+                  <th style="padding:2px 6px">object</th>
+                  <th style="padding:2px 6px">position (m)</th>
+                  <th style="padding:2px 6px">conf</th>
+                  <th style="padding:2px 6px">seen</th>
+                  <th style="padding:2px 6px">obs</th>
+                </tr>
+              </thead>
+              <tbody id="scene-objects-rows"></tbody>
+            </table>
+            <div class="meta-row" id="scene-objects-meta" style="margin-top:6px;display:flex;gap:18px;flex-wrap:wrap;font-size:11.5px;color:var(--text-dim)">
+              <span id="scene-objects-count"></span>
+              <span id="scene-objects-frame"></span>
+              <span id="scene-objects-source"></span>
+            </div>
           </div>
         </div>
       </div>
@@ -324,6 +416,6 @@
 
 </main>
 
-<script src="/static/dashboard.js"></script>
+<script src="/static/dashboard.js?v=walk1"></script>
 </body>
 </html>
