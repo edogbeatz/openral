@@ -293,6 +293,7 @@ source install/setup.bash
 # One curated model, e.g.:
 export OPENRAL_REASONER_MODEL=claude-opus-4-8
 export OPENRAL_REASONER_API_KEY=sk-ant-...
+# Optional TypeSafe gate: just sync --group typesafe && OPENRAL_TYPESAFE=1
 
 ros2 run openral_reasoner_ros reasoner_node
 ros2 lifecycle set /openral_reasoner configure

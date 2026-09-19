@@ -441,6 +441,9 @@ class SensorSpec(BaseModel):
         rate_hz: Expected publishing rate in Hz.
         intrinsics: Pinhole camera intrinsics (if applicable).
         encoding: Image encoding, e.g. "rgb8", "16UC1".
+        sim_placement: Camera pose in a bare MJCF; the HAL camera rig splices it.
+        sim_render: When False, skip splice and ``mjr_readPixels``; spec stays
+            for VLA matching.
         vla_feature_key: VLA observation dict key this sensor maps to, e.g.
             'observation.images.camera1'. Used by skill loaders to auto-wire
             sensors to VLA input_features.
@@ -486,6 +489,10 @@ class SensorSpec(BaseModel):
     # ``None`` = not rigged (the MJCF is expected to already declare the camera,
     # e.g. a scene-attached or composed-props model).
     sim_placement: CameraSimPlacement | None = None
+    # When False, the sim camera rig does not splice this RGB sensor and
+    # ``MujocoArmHAL.read_images`` does not ``mjr_readPixels`` it. The spec
+    # stays for VLA capability matching. Default True (backward compatible).
+    sim_render: bool = True
     # LiDAR / point cloud
     n_channels: int | None = None
     range_min_m: float | None = None
@@ -5991,8 +5998,13 @@ the checkpoint's ``params/deploy.yaml``, builds the rsl-rl observation
 from HAL / world-state proprio + a ``policy_extras`` velocity command
 (overridable per ``execute_rskill`` via ``goal_params_json`` or
 ``VLASpec.extra`` without editing the rSkill YAML),
-and emits 12-D ``JOINT_POSITION`` targets. The reasoner prompt is **not**
-mapped to Isaac ``velocity_commands`` — see the rSkill README.
+and emits 12-D ``JOINT_POSITION`` targets. First customer:
+``diasAiMaster/unitree-go2-velocity-flat`` (45-D). Second:
+``rskills/rsl-rl-onnx-go2-hop-flat`` (mjlab hop, 470-D history-10;
+ONNX fetched via ``onnx_url``, license unknown). Third:
+``rskills/rsl-rl-onnx-go2-spring-jump`` (gym spring_jump, same 470-D
+width, frame-major + joystick A; dashboard hop Apply). The reasoner prompt
+is **not** mapped to Isaac ``velocity_commands`` — see the rSkill README.
 """
 
 # Regexes pinned at module scope so error messages stay consistent and

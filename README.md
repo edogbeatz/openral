@@ -330,7 +330,8 @@ uv run openral behavior serve \
   --task turning_on_radio
 
 # Observability
-uv run openral dashboard                     # OTLP receiver at :4318
+just dashboard                               # operator /simple at :4318 (write-controls). Agents: run this when asked to start the app.
+uv run openral dashboard                     # OTLP receiver at :4318 (no write-controls)
 
 # Hardware deployment
 uv run openral deploy run --config scenes/deploy/<your-workcell>.yaml

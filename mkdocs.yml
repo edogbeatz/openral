@@ -110,6 +110,7 @@ nav:
     - The live world map, measured: reference/world-map-fidelity.md
     - RoboCasa carry survey (base translation while carrying): reference/robocasa-carry-survey.md
     - Collision-safety alternatives survey: reference/collision-safety-alternatives-survey.md
+    - Go2 + Z1 mass balance, measured: reference/go2-z1-mass-balance.md
     - Design decisions: decisions.md
   - Contributing:
     - Development: contributing/development.md

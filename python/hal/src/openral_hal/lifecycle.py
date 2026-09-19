@@ -876,6 +876,12 @@ if _ROS2_AVAILABLE:
                 if policy_state_raw is not None
                 else None
             )
+            qpos: tuple[float, ...] | None = None
+            handles_fn = getattr(self._hal, "mujoco_handles", None)
+            handles = handles_fn() if callable(handles_fn) else None
+            if handles is not None:
+                _model, data = handles
+                qpos = tuple(float(v) for v in data.qpos)
             self._proprio.set(
                 ProprioFrame(
                     state=state,
@@ -884,6 +890,7 @@ if _ROS2_AVAILABLE:
                     base_twist=tuple(float(v) for v in twist),
                     sim_time_ns=sim_time_ns,
                     policy_state=policy_state,
+                    qpos=qpos,
                 )
             )
 
@@ -928,6 +935,7 @@ if _ROS2_AVAILABLE:
                     },
                 ) as hal_read_span,
             ):
+                frame = None
                 if self._proprio is not None:
                     # Read the post-step snapshot (plain data), never
                     # the simulator: this callback runs on the control thread
@@ -955,6 +963,8 @@ if _ROS2_AVAILABLE:
                     effort_limits=[j.effort_limit for j in joint_specs] or None,
                     stamp_ns=state.stamp_ns,
                 )
+                if frame is not None and frame.qpos:
+                    ral_producer.record_qpos(hal_read_span, qpos=frame.qpos)
 
             msg = RosJointState()
             msg.header.stamp = self.get_clock().now().to_msg()

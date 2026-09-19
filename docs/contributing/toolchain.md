@@ -72,6 +72,7 @@ just sync --group libero        # LIBERO suites
 just sync --group robocasa      # RoboCasa robosuite + supporting deps
 just sync --group metaworld     # MetaWorld
 just sync --group maniskill3    # ManiSkill3 / SAPIEN
+just sync --group typesafe      # TypeSafe System One SDK (reasoner judgment sidecar)
 ```
 
 `just sync --group robocasa` is exactly `uv sync --all-packages --group robocasa`
@@ -211,6 +212,11 @@ just hil so100                  # SO-100 HIL tests
 ## Docs
 
 ```bash
+just dashboard                  # laptop /simple collector (write-controls).
+                                # Agents: when asked to start the app, run this
+                                # (or .agents/skills/go2-foxglove-view/scripts/start-app.sh);
+                                # do not print the command and wait.
+just dashboard-acquire-env      # seed ~/.openral/dashboard.env from Railway
 just docs                       # mkdocs serve at :8000
 just docs-build                 # mkdocs build --strict (CI parity)
 just schema-export              # regenerate JSON Schema (CI compares)

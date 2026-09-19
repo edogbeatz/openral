@@ -1,0 +1,54 @@
+# OpenRAL translation of the public mjlab hop observation contract
+# (Renkunzhao/legged_rl_deploy policies/go2/mjlab/hop/config.yaml,
+# blob 7594b56). Widths and term names come from that file's comments;
+# this is not a copy of the upstream YAML. History is term-major,
+# oldest_first, length 10 → 47 × 10 = 470. policy.onnx is fetched at
+# load (policy_extras.onnx_url) — not vendored; upstream has no license.
+joint_ids_map: [3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8]
+step_dt: 0.02
+default_joint_pos: [0.1, 0.8, -1.5, -0.1, 0.8, -1.5, 0.1, 1.0, -1.5, -0.1, 1.0, -1.5]
+# Upstream hop YAML (all joints). Go2MujocoHAL applies these on a hop-stand
+# ResetToPose and restores walk PD on Hub Recalibrate / Stop.
+stiffness: [20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0]
+damping: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+actions:
+  JointPositionAction:
+    scale: 0.25
+    offset: [0.1, 0.8, -1.5, -0.1, 0.8, -1.5, 0.1, 1.0, -1.5, -0.1, 1.0, -1.5]
+observations:
+  gait_phase_2:
+    params: {cycle_time: 1.5}
+    scale: [1.0, 1.0]
+    history_length: 10
+    history_order: oldest_first
+    history_warmup: repeat_first
+  velocity_commands:
+    scale: [1.0, 1.0, 1.0]
+    history_length: 10
+    history_order: oldest_first
+    history_warmup: repeat_first
+  base_ang_vel_B:
+    scale: [1.0, 1.0, 1.0]
+    history_length: 10
+    history_order: oldest_first
+    history_warmup: repeat_first
+  eulerZYX_rpy:
+    scale: [1.0, 1.0, 1.0]
+    history_length: 10
+    history_order: oldest_first
+    history_warmup: repeat_first
+  joint_pos_rel:
+    scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    history_length: 10
+    history_order: oldest_first
+    history_warmup: repeat_first
+  joint_vel_rel:
+    scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    history_length: 10
+    history_order: oldest_first
+    history_warmup: repeat_first
+  last_action:
+    scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    history_length: 10
+    history_order: oldest_first
+    history_warmup: repeat_first

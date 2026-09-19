@@ -104,12 +104,13 @@ def _make_named_skill(name: str) -> Any:
             super().__init__(
                 name=name, version="0.1.0", role="s1", embodiment_tags=["so100_follower"]
             )
+            self.episode_resets = 0
 
         def _configure_impl(self) -> None:
             pass
 
         def _activate_impl(self) -> None:
-            pass
+            self.episode_resets += 1
 
         def _deactivate_impl(self) -> None:
             pass
@@ -375,6 +376,10 @@ def test_redispatching_same_rskill_id_reuses_resident_skill() -> None:
         _run_goal(executor, runtime.skill_runner_node, "openral/skill-a")
         _run_goal(executor, runtime.skill_runner_node, "openral/skill-a")
         assert len(built) == 1, "same id should resolve once and be reused"
+        assert built[0].episode_resets >= 2, (
+            "reused resident must episode-reset on the second execute_rskill "
+            f"(activate_impl count={built[0].episode_resets})"
+        )
 
 
 @pytest.fixture

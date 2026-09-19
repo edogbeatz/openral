@@ -38,6 +38,7 @@ from opentelemetry.proto.metrics.v1.metrics_pb2 import Metric, ResourceMetrics
 from opentelemetry.proto.trace.v1.trace_pb2 import ResourceSpans, Span
 
 from openral_observability import semconv
+from openral_observability.dashboard._fall import qpos_is_fallen
 
 __all__ = [
     "HERO_CAMERA_KEYS",
@@ -47,20 +48,20 @@ __all__ = [
     "merge_hero_cameras",
 ]
 
-# Go2 / Go2+Z1 HAL ``SensorSpec.name`` values the dashboard always mounts.
-# ``front`` is the snout/main camera; ``top`` is the menagerie ``track`` 3/4
-# side view (viz-only, no ``vla_feature_key``). These are the keys Foxglove
-# and the HAL publish — not invented slot names.
-HERO_CAMERA_KEYS: Final[tuple[str, ...]] = ("front", "top")
-HERO_CAMERA_ROLES: Final[dict[str, str]] = {"front": "main", "top": "side"}
+# Go2 / Go2+Z1 HAL ``SensorSpec.name`` the dashboard always mounts.
+# ``top`` is the menagerie ``track`` 3/4 view (the live twin). ``front`` is
+# declared for VLA matching but ``sim_render: false`` — splicing it would
+# steal a second ``mjr_readPixels`` from the walk thread.
+HERO_CAMERA_KEYS: Final[tuple[str, ...]] = ("top",)
+HERO_CAMERA_ROLES: Final[dict[str, str]] = {"top": "side", "front": "main"}
 
 
 def merge_hero_cameras(cameras: dict[str, Any] | None) -> dict[str, Any]:
-    """Always include the Go2 main+side slots, then overlay live entries.
+    """Always include the Go2 ``top`` slot, then overlay live entries.
 
     An empty store (WAITING, laptop collector with no OTLP) still returns
-    ``front`` / ``top`` so the page can render two labeled placeholders
-    instead of hiding the camera cell until the first ``sensors.read_latest``.
+    ``top`` so the page can render a labeled placeholder instead of hiding
+    the camera cell until the first ``sensors.read_latest``.
     """
     out: dict[str, Any] = {
         key: {"modality": "rgb", "role": HERO_CAMERA_ROLES[key]} for key in HERO_CAMERA_KEYS
@@ -466,9 +467,9 @@ class TelemetryStore:
             # ``sensors.read_latest`` spans. ``overlays`` — per-camera detector
             # boxes / segmenter masks, fed by ``PerceptionOverlaySubscriber``
             # (live rclpy, not OTel) and keyed by the SAME camera name, which is
-            # what lets the frontend draw one on top of the other. Hero slots
-            # (Go2 ``front`` + ``top``) are seeded empty so WAITING still
-            # shows two labeled panels.
+            # what lets the frontend draw one on top of the other. The Go2
+            # hero slot (``top``) is seeded empty so WAITING still shows one
+            # labeled panel. ``front`` is ``sim_render: false``.
             "perception": {"cameras": merge_hero_cameras(None)},
             "inference": {},
             # ``estopped`` tracks the kernel's e-stop latch so the UI shows an
@@ -503,6 +504,8 @@ class TelemetryStore:
             "reasoner": {},
             "trace": {},  # latest_trace_id
         }
+        # One /simple Acquire chat propose (fit / adapt_offer / adapted).
+        self._acquire_propose: dict[str, Any] | None = None
         self._subscribers: list[asyncio.Queue[dict[str, Any]]] = []
         # We notify subscribers via the loop that created them. The
         # receiver may run in a worker thread (uvicorn worker pool);
@@ -616,6 +619,78 @@ class TelemetryStore:
         """
         with self._lock:
             return self._snapshot_locked(include_camera_thumbs=include_camera_thumbs)
+
+    def camera_thumb(self, source: str) -> str | None:
+        """Latest base64 JPEG for ``source``, without cloning the snapshot.
+
+        MJPEG tiles used to call ``snapshot()`` on every part, which
+        deep-copied events/metrics/both camera JPEGs just to read one
+        thumb. That stall showed up as Bare Go2 slideshow video even
+        after the HAL was emitting 15 Hz frames.
+        """
+        with self._lock:
+            cameras = self._topics.get("perception", {}).get("cameras", {})
+            if not isinstance(cameras, dict):
+                return None
+            entry = cameras.get(source)
+            if not isinstance(entry, dict):
+                return None
+            thumb = entry.get("thumbnail_jpeg_b64")
+        return thumb if isinstance(thumb, str) and thumb else None
+
+    def camera_known(self, source: str) -> bool:
+        """Whether ``source`` has an ingested camera row, without a snapshot.
+
+        ``GET /api/camera/{source}/stream`` and ``/latest.jpg`` used to call
+        ``snapshot()`` just to 404 unknown names. The still-poll fallback
+        hit that every 300 ms per tile and cloned the event ring plus both
+        JPEGs — the same stall ``camera_thumb`` was meant to kill.
+        """
+        with self._lock:
+            cameras = self._topics.get("perception", {}).get("cameras", {})
+            return isinstance(cameras, dict) and source in cameras
+
+    def qpos_frame(self) -> dict[str, Any] | None:
+        """Latest MuJoCo ``qpos`` without cloning the dashboard snapshot.
+
+        ``GET /api/qpos`` is polled at tens of Hz by ``openral viz mujoco``.
+        Cloning events/metrics/JPEGs on every poll would recreate the
+        slideshow tax ``camera_thumb`` already killed. ``fallen`` is the
+        1.0 rad free-joint tip gate used by ``/simple`` chat.
+        """
+        with self._lock:
+            rs = self._topics.get("robot_state") or {}
+            qpos = rs.get("qpos")
+            if not isinstance(qpos, (list, tuple)) or not qpos:
+                return None
+            nq_raw = rs.get("nq")
+            nq = int(nq_raw) if isinstance(nq_raw, int) else len(qpos)
+            stamp_unix = rs.get("ts_unix")
+            robot_id = self._identity.get("openral.hal.robot.model")
+            qpos_list = list(qpos)
+            return {
+                "qpos": qpos_list,
+                "nq": nq,
+                "robot_id": robot_id if isinstance(robot_id, str) else None,
+                "stamp_unix": float(stamp_unix) if isinstance(stamp_unix, (int, float)) else None,
+                "fallen": qpos_is_fallen(qpos_list),
+            }
+
+    def set_acquire_propose(self, propose: dict[str, Any] | None) -> None:
+        """Latch or clear the /simple Acquire chat propose.
+
+        Chat probe/ask writes this; Apply reads ``walk_command`` / ``execute_id``
+        from ``GET /api/state``. One operator, one pending row.
+        """
+        with self._lock:
+            self._acquire_propose = dict(propose) if propose is not None else None
+            payload = self._snapshot_locked()
+        self._publish(payload)
+
+    def acquire_propose(self) -> dict[str, Any] | None:
+        """Copy of the pending Acquire propose, or ``None``."""
+        with self._lock:
+            return dict(self._acquire_propose) if self._acquire_propose else None
 
     def set_estopped(self, value: bool) -> None:
         """Force the e-stop latch flag from an authoritative operator action.
@@ -1031,6 +1106,13 @@ class TelemetryStore:
                         "stamp_ns": attrs.get("openral.hal.joint.stamp_ns"),
                     }
                 )
+            qpos = attrs.get("openral.hal.qpos")
+            if qpos is not None:
+                self._topics["robot_state"]["qpos"] = qpos
+                nq = attrs.get("openral.hal.nq")
+                self._topics["robot_state"]["nq"] = (
+                    int(nq) if isinstance(nq, int) else len(qpos) if isinstance(qpos, list) else 0
+                )
         elif span_name == "hal.send_action":
             self._topics["commands"].update(
                 {
@@ -1415,6 +1497,8 @@ class TelemetryStore:
             "events": [e.to_json() for e in self._merged_events()],
             "counters": dict(self._counters),
             "metrics": [s.to_json() for s in self._metrics.values()],
+            "acquire_propose": dict(self._acquire_propose) if self._acquire_propose else None,
+            "fallen": qpos_is_fallen((self._topics.get("robot_state") or {}).get("qpos")),
         }
 
     def _publish(self, payload: dict[str, Any]) -> None:

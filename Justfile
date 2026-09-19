@@ -108,6 +108,7 @@ bootstrap-ollama *args:
 #   just sync                       # whole workspace, no optional groups
 #   just sync --group libero        # + libero extras (still all-packages)
 #   just sync --group robocasa      # + robocasa extras (still all-packages)
+#   just sync --group typesafe      # + TypeSafe System One SDK (reasoner sidecar)
 #   CC=/usr/bin/gcc just sync --group libero
 #
 # ``--all-packages`` is forced unless the caller scoped the sync to a
@@ -722,6 +723,34 @@ hil robot:
         exit 0
     fi
     exit $status
+
+# Seed ~/.openral/dashboard.env from Railway acquire-api (or ACQUIRE_API_KEY).
+# Never prints the key. `openral dashboard` loads that file on start.
+dashboard-acquire-env:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    KEY="${ACQUIRE_API_KEY:-}"
+    URL="${ACQUIRE_API_URL:-https://acquire-api-production.up.railway.app}"
+    if [ -z "${KEY}" ]; then
+        ACQUIRE_ROOT="${ACQUIRE_REPO:-{{ justfile_directory() }}/../robo-skill-acquire}"
+        if command -v railway >/dev/null 2>&1 && [ -d "${ACQUIRE_ROOT}" ]; then
+            KEY="$(
+                cd "${ACQUIRE_ROOT}" \
+                && railway variable list --service acquire-api --environment production --json \
+                | python3 -c 'import json,sys; print(json.load(sys.stdin).get("API_KEY",""), end="")'
+            )" || KEY=""
+        fi
+    fi
+    if [ -z "${KEY}" ]; then
+        echo "ACQUIRE_API_KEY is empty. Export it, or link railway in ${ACQUIRE_REPO:-../robo-skill-acquire}." >&2
+        exit 1
+    fi
+    ACQUIRE_API_URL="${URL}" ACQUIRE_API_KEY="${KEY}" uv run openral dashboard --init-acquire-env
+
+# Laptop /simple collector. Loads ~/.openral/dashboard.env for Acquire.
+# Agents: when asked to start the app, run this (or start-app.sh) this turn.
+dashboard *args:
+    OPENRAL_DASHBOARD_WRITE_CONTROLS=1 uv run openral dashboard {{ args }}
 
 # Docs serve
 docs:

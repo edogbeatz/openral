@@ -20,10 +20,22 @@
 # gripper at up to 1.196 m, and 1.196 m with the gripper ahead of the body.
 # Interior door handles sit at 0.85-1.05 m, inside that envelope.
 #
-# Mass: menagerie Go2 + Z1 is ~19.9 kg total (arm ~4.42 kg), under the Go2
-# manifest's `can_lift_kg: 8.0`. Full arm mass tips the bare-Go2 rsl-rl walk
-# skill within a few metres, so `scene_defaults.composition.arm_mass_scale`
-# shrinks arm inertias for locomotion demos (meshes/kinematics unchanged).
+# Mass: menagerie Go2 + Z1 is 19.901 kg total — 4.419 kg of arm plus a 0.276 kg
+# jaw, on a 15.253 kg dog — under the Go2 manifest's `can_lift_kg: 8.0`. Full arm
+# mass was seen to tip the bare-Go2 rsl-rl walk skill within a few metres on the
+# live deploy graph, so `scene_defaults.composition.arm_mass_scale` shrinks arm
+# inertias for locomotion demos (meshes/kinematics unchanged).
+#
+# What actually decides that walk is the arm POSE, not the arm mass: headless at
+# honest mass the composite walks 9.9 m / 20 s from `ARM_READY` (8/8 randomised
+# trials) and pitches over in ~0.7 s from the menagerie `ARM_HOME` (0/8). CoM
+# offset and pitch inertia were both tested as explanations and both rejected;
+# the mechanism is unexplained. Hence `GO2_Z1_SPAWN_JOINT_TARGETS` spawns the arm
+# at `ready` — a 12-D locomotion row leaves the sticky arm hold alone, so a gait
+# applied before any Recalibrate rides the spawn pose. See
+# `docs/reference/go2-z1-mass-balance.md`; do NOT change `arm_mass_scale` on the
+# strength of the headless result alone (the live graph adds jitter it lacks).
+#
 # Real Unitree pairs the Z1 with the larger B1; this is a sim study.
 #
 # Sim-only: `hal.real` is null, inherited from the Go2 (no unitree_sdk2
@@ -296,6 +308,8 @@ sensors:
       cy: 240.0
     encoding: "rgb8"
     vla_feature_key: "observation.images.front"
+    # Same as Bare Go2: snout cannot show the body. Skip EGL; keep the spec.
+    sim_render: false
     sim_placement:
       parent_body: "base"
       pos: [0.32715, -0.00003, 0.04297]

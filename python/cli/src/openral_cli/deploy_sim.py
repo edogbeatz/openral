@@ -3122,7 +3122,7 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
     _console.print(
         "  dashboard:     "
         + (
-            f"[green]auto-spawn[/green] at http://127.0.0.1:{dashboard_port}/"
+            f"[green]auto-spawn[/green] at http://127.0.0.1:{dashboard_port}/simple"
             if dashboard
             else "[dim]disabled[/dim] (pass --dashboard to auto-spawn)"
         )

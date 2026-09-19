@@ -1,9 +1,8 @@
 # `openral dashboard` — live debugging UI
 
-A single-page, read-only debug pane over the OpenRAL OTel stream.
-Renders the most recent `rskill.execute`, `skill.chunk_inference`,
-and `safety.check` spans, rolling metric histograms, and an event
-log — live, no Jaeger required.
+The operator dashboard is `GET /simple` only. `GET /` redirects there;
+classic `static/index.html` is not started. The same port is still the
+OTLP/HTTP collector.
 
 The dashboard runs as an embedded OTLP receiver rather than an in-process
 exporter, so instrumented workloads stay decoupled from the debug UI.
@@ -15,9 +14,38 @@ SSE event stream, **and** an embedded OTLP/HTTP receiver. The default
 port is **4318** (the OTLP/HTTP standard) — `8000` collided with
 `mkdocs serve` (`just docs`) and most FastAPI demos (issue #132).
 
+### Agents: start it when asked
+
+When the user says **start the app**, **start the dashboard**, **start
+cricket**, **open `/simple`**, or equivalent: **run it in this turn**.
+Do not paste the command and wait for them.
+
+1. Probe `curl -sf --max-time 2 http://127.0.0.1:4318/healthz`.
+2. If that fails, from the repo root start the laptop collector:
+   `just dashboard` (`OPENRAL_DASHBOARD_WRITE_CONTROLS=1 uv run openral
+   dashboard`). One-time: `just dashboard-acquire-env` writes
+   `~/.openral/dashboard.env`. Reuse a live `:4318`. Do not steal
+   tunnels. Do not `pkill` the graph.
+3. If they asked for the robot / cricket / twin and
+   `GET /api/demo/cricket` is not `graph_running`,
+   `POST /api/demo/cricket/start` and wait. Already-running is success.
+4. Open `http://127.0.0.1:4318/simple`.
+
+Canonical agent command:
+
 ```bash
+.agents/skills/go2-foxglove-view/scripts/start-app.sh
+```
+
+`--dashboard-only` skips cricket. Playbook:
+[`.agents/skills/go2-foxglove-view/SKILL.md`](../../.agents/skills/go2-foxglove-view/SKILL.md).
+
+### Humans / CLI
+
+```bash
+just dashboard               # write-controls + ~/.openral/dashboard.env
 openral dashboard            # binds 127.0.0.1:4318 by default
-# → stderr prints: OpenRAL dashboard: http://localhost:4318/ …
+# → stderr prints: OpenRAL dashboard: http://localhost:4318/simple …
 ```
 
 Then point any OpenRAL workload at it. **Sim does not emit OTel by
@@ -68,7 +96,7 @@ openral benchmark run --dashboard \
   --rskill smolvla-libero
 ```
 
-The workload prints `OpenRAL dashboard attached: http://localhost:4318/`
+The workload prints `OpenRAL dashboard attached: http://localhost:4318/simple`
 once the child reports healthy, then routes traces+metrics to it for
 the rest of the run. The child is SIGINT'd at exit after OTel finishes
 draining (no `Connection refused` retries on the way down).
@@ -76,14 +104,14 @@ draining (no `Connection refused` retries on the way down).
 ## What you see
 
 The page only shows what the running deploy can actually feed — with one
-exception. **Perception · cameras** is always on screen: two Go2 HAL
-slots, **Main · `front`** (snout) and **Side · `top`** (3/4 view). The
-`<img>` tags point at `/api/camera/{front,top}/stream` from first paint
-and start in `is-streaming` so the opaque `waiting for camera`
+exception. **Perception · cameras** is always on screen: the Go2 HAL
+slot **Side · `top`** (3/4 view). `front` stays in the manifest for a
+future VLA (`sim_render: false`) and is not streamed. The
+`<img>` tag points at `/api/camera/top/stream` from first paint
+and starts in `is-streaming` so the opaque `waiting for camera`
 placeholder cannot cover a live MJPEG (multipart often never fires
 `img.onload`). Direct proof: `http://127.0.0.1:4318/api/camera/top/stream`
-shows the dog; `front` is snout-out (checkerboard floor + black sky is
-healthy). A laptop collector with no local thumbs still proxies cricket
+shows the dog. A laptop collector with no local thumbs still proxies cricket
 `:14318`. Other optional cards still start hidden and reveal themselves
 the first time their producer emits — so
 `scenes/deploy/go2_bench.yaml`, which runs with SLAM, octomap, object
@@ -235,6 +263,9 @@ the required next step (confirm on click). Switching robots never auto-walks.
 The last selected skill id is remembered per robot in `sessionStorage`.
 **Stop** cancels the in-flight `ExecuteRskill` goal (runner drain + idle-hold)
 then snaps Hub stand — it does **not** latch e-stop, so Apply can run again.
+Cancel-all with nothing in flight is success (rclpy returns
+`ERROR_REJECTED`); a broken cancel dump still stands. Dead cricket is
+503 **cricket is disconnected**, not OP_FAULT `execute_rskill cancel failed`.
 **Start Cricket** from a laptop dashboard (`OPENRAL_DASHBOARD_WRITE_CONTROLS=1
 uv run openral dashboard` on `:4318`) is the operator start path: `brev start
 abundant-turquoise-cricket` if the instance is stopped, `docker start
@@ -257,13 +288,107 @@ is the drive-time snap *while the skill is still running*. **E-STOP**
 (command band) latches the kernel. The fallback **Run skill** strip stays in
 the page but hidden while this bar is shown.
 
+**Operator dashboard** (`GET /simple`; `GET /` redirects here) is the
+Next.js 16 + shadcn New York page — Zappi's stack (React 19,
+Tailwind v4, Geist, `pnpm`) with industrial HMI chrome (square buttons,
+camera inner ticks, `//` labels, no corner radii), not a restyle of this operator dashboard. Source lives in
+`python/observability/simple_ui/` (`pnpm build` writes
+`static/simple-ui/`). **Start engine** (`POST /api/demo/cricket/start`) shows **Starting…**
+immediately, then UNIT + SKILL dropdowns. Empty / no live twin is
+**Load the unit** (UNIT placeholder + primary CTA) — never a pretent
+Bare Go2 pick. A live or loading twin labels **Bare Go2** or **Go2+Z1**
+from cricket identity (`GET /api/config` `robot_id`), not a stale
+`sessionStorage` pick. UNIT lists Bare Go2 / Go2+Z1. SKILL stays empty
+until chat Acquire proposes (walk fit / adapt-ask / hop reject).
+Load the twin. Header primary is **Start engine** / **Load the unit** /
+**Stop** only — not Calibrate or Apply. Load auto-stands
+(`POST /api/demo/recalibrate`) so Apply is ready. Footer **RESET**
+(`POST /api/demo/recalibrate`, **RESETTING…** while in flight) is
+ResetToPose / Hub stand (Go2+Z1 parks arm-ready). Chat owns **Apply**
+(json-render Button on “Apply it?”): walk
+`POST /api/demo/walk` with the proposed id and optional
+`velocity_commands`, hop
+`POST /api/skill/execute`. Chat Apply runs immediately when the unit
+already stood; it stands first only if the playhead is still Calibrate. A disconnected cricket returns **503 once**; there is no
+wait-ladder retry. Recalibrate does not rewrite hop to walk. Selecting a skill does
+not start motion. **Stop** is Hub stand, not End Cricket. It does
+**not** auto-walk. Walk's last 3 s command stand (`coast_to_stand_s`);
+**Stop** still snaps Hub stand and does not wait the 60 s abort. The engine
+screen (idle / connecting) has no pickers. **top** (`CAM_TOP`) always
+fills the leftover viewport under the chrome (fetch + canvas MJPEG).
+Live steps add UNIT + SKILL above that tile and overlay LIVE. Branding is a footer
+**powered by openral** plus **RESET** (no top OPENRAL/SIMPLE header or logo). The
+ingest connection pill sits on the same row as the step mark (`// OP_LOAD`)
+and matches operator `/`: color-coded circle + waiting… /
+live / stale / dead, aged on the dashboard host
+(`now_unix - last_ingest_ts` from `GET /api/state` / `GET /api/stream`),
+not the browser clock. Live tiles fetch `/stream` immediately (they must not
+`GET /api/demo/cricket` — that SSH occupancy check left **connecting**
+up while MJPEG was already flowing) and paint it on a canvas: parse
+`--frame` parts, `createImageBitmap`, keep only the latest JPEG if
+decode lags. Do not remount `<img src=multipart>` on `error` (that
+aborts the stream into a 3 fps slideshow). A sibling `latest.jpg`
+still is only until the canvas has a frame. `latest.jpg` 204 is **no signal** only
+when the stream has never painted; a 404 (old cricket) keeps the
+stream. Laptop `:4318` seeds MJPEG from the tunneled `/api/state`
+thumb (old cricket 404s `/latest.jpg`), then splices cricket MJPEG,
+and overlays cricket ingest + `robot_id` so the conn pill follows
+ingest age and UNIT follows the live occupant (`go2` / `go2_z1`).
+An empty occupant stays **Load the unit**; a stale Bare Go2
+`sessionStorage` pick must not win over a live Go2+Z1 graph.
+Cold-reload playhead lives in `sessionStorage`
+(`openral.simple.play`). Same write-controls gate. Failures stay on the
+current step with an Alert; the same button retries. A 403 is
+write-controls off; a network drop is "can't reach the dashboard";
+Brev credits/quota/billing and cricket SSH failures are shown in that
+Alert, not swallowed. A live graph clears a stale `start_error`
+(`brev start` can print ready before sshd accepts —
+`Connection closed by <gateway> port 56280`); Start treats
+`graph_running` / `already_running` as success. Laptop Calibrate /
+Apply SSHes `ros2` into cricket when the graph is up; if the graph is
+down, credits are exhausted, or SSH is down, OP_FAULT is **cricket is
+disconnected** (or the existing `start_error`) — never "`ros2` not on
+PATH; source the workspace". `GET /api/demo/cricket` occupancy SSH is off the
+event loop so Start is not queued behind a 12 s status probe.
+A right **Go2 chat sidebar** (`lg:w-80`, below the play column on
+narrow viewports) talks to sibling Acquire via `POST /api/chat`.
+The laptop `openral dashboard` process needs
+`ACQUIRE_API_URL` (Railway `acquire-api` origin) and
+`ACQUIRE_API_KEY` (that service's `API_KEY`). There is no library
+default. Seed once with `just dashboard-acquire-env` (writes
+`~/.openral/dashboard.env`); `openral dashboard` / `just dashboard`
+load that file into empty `ACQUIRE_API_*` at process start. First probe is `allow_adapt: false`; walk on
+Go2 **fits**, walk on Go2+Z1 **asks** before remap, hop on Go2+Z1
+**rejects** (payload). Probe/ask does **not** publish
+`/openral/prompt` — that path can skip-LLM walk. Chat maps
+colloquial **go left** / **left** / **walk left** onto the walk
+joystick `turn_left` (yaw), not a sidestep and not an S2 plan; say
+**strafe left** when you mean a sidestep. SKILL stays empty
+until a fit/adapted propose; chat `#chat-apply` runs APPLYING… when
+the unit already stood (STANDING… only if not; the same button is STOP /
+STOPPING… while the skill runs). It is a
+sibling column, not a sticky overlay, so it does not cover cameras or
+footer RESET. Waiting on Acquire is industrial `// pulling`
+shimmer (CSS `text-shimmer`, no extra UI package) until the first
+tokens; then Vercel Streamdown line-streams with `isAnimating` and a
+block caret. Typed status cards render through json-render
+`useChatUI`. Switching UNIT (Bare Go2 ↔ Go2 + Z1) appends **unit changed.**
+in chat only when the occupant actually changes — not on reselecting
+the live twin, not on first Load, not on keystrokes. A base tip past
+1.0 rad (same gate as the Go2+Z1 mass-balance tool) appends **the unit
+fell. this skill needs retraining or finetuning.** once until RESET
+stands it. That line is a verify miss, not Acquire Adapt — Adapt is
+tag remap, not a second training run. Conn `waiting…` uses the same shimmer; camera
+`connecting` is unchanged (CAM_TOP still fills leftover viewport).
+A missing Acquire URL stays **CHAT_FAULT** / fault copy in the pane.
+
 | Control | Endpoint | Effect |
 | --- | --- | --- |
-| Bare Go2 | `POST /api/demo/load` `{"preset":"go2"}` | Cold-reload `go2_walk` (~30-90 s), then auto-stand |
-| Go2 + Z1 | `POST /api/demo/load` `{"preset":"go2_z1"}` | Cold-reload `go2_z1_walk` (~30-90 s); Recalibrate next |
-| Recalibrate | `POST /api/demo/recalibrate` | E-stop clear + free-base upright; Go2+Z1 parks the Z1 at arm-ready so Walk holds that pose |
-| Skill picker + Apply skill | walk → `POST /api/demo/walk`; else `POST /api/skill/execute` | Walk default `[0.35, 0, 0]`; other skills omit blank goal params |
-| Stop | `POST /api/demo/stop` | Cancel `ExecuteRskill` (no e-stop latch) + Hub stand; Apply again |
+| Bare Go2 | `POST /api/demo/load` `{"preset":"go2"}` | Cold-reload `go2_walk` (~30-90 s), then auto-stand (classic + `/simple`) |
+| Go2 + Z1 | `POST /api/demo/load` `{"preset":"go2_z1"}` | Cold-reload `go2_z1_walk` (~30-90 s); `/simple` auto-stands (arm-ready); classic demo bar still asks Recalibrate |
+| Recalibrate / `/simple` RESET | `POST /api/demo/recalibrate` | `/simple` auto-stands after load; footer RESET is tip recovery; Go2+Z1 parks arm-ready so Walk holds that pose |
+| Skill picker + Apply skill | walk → `POST /api/demo/walk`; else `POST /api/skill/execute` | Walk default `[0.35, 0, 0]`; chat can send `velocity_commands` (turn left / …) |
+| Stop | `POST /api/demo/stop` | Cancel `ExecuteRskill` (idempotent; no e-stop latch) + Hub stand; Apply again |
 | Stand | `POST /api/demo/stand` | Tip recovery while driving (skill keeps running) |
 | Start Cricket | `POST /api/demo/cricket/start` | Laptop: `brev start` + docker + tunnels + attach (no-op success if graph up). On cricket: start graph if down |
 | End Cricket | `POST /api/demo/cricket/end` | Cancel skill, stop graph, `brev stop` the Brev instance (billing) |
@@ -271,8 +396,8 @@ the page but hidden while this bar is shown.
 
 After a laptop Start, the dog is at **Foxglove** `ws://127.0.0.1:8765` (open
 `foxglove://open?ds=foxglove-websocket&ds.url=ws://127.0.0.1:8765`). This
-laptop page (`:4318`) keeps the two camera tiles and proxies cricket's
-MJPEG (`front` + `top`) from **http://127.0.0.1:14318/** so the operator
+laptop page (`:4318`) keeps the `top` camera tile and proxies cricket's
+MJPEG from **http://127.0.0.1:14318/** so the operator
 does not have to leave this window for a picture. Cricket's own dashboard
 and demo bar remain at `:14318`. A fully stopped box is the same button:
 
@@ -295,14 +420,17 @@ operator tooling without a card of their own.
 
 | Path           | What it serves                                       |
 |----------------|------------------------------------------------------|
-| `GET /`        | Single-page UI (vanilla JS + SSE, no npm)            |
+| `GET /`        | 307 to `/simple` (classic root UI is not started) |
+| `GET /simple`  | Operator dashboard (Next.js 16 + shadcn) |
 | `GET /healthz` | `{"status": "ok"}` for compose healthchecks          |
 | `GET /api/state`  | One-shot JSON snapshot of the current store       |
 | `GET /api/stream` | Server-Sent Events — every state update           |
-| `GET /api/camera/{source}/stream` | MJPEG of OTLP thumbs; `front`/`top` always known; laptop proxies cricket `:14318` |
+| `POST /api/prompt` | Operator prompt → `openral prompt --topic /openral/prompt_in/dashboard` |
+| `POST /api/chat` | Acquire probe/ask stream for `/simple`; does not publish a reasoner prompt |
+| `GET /api/camera/{source}/stream` | MJPEG of OTLP thumbs; `top` always known; laptop proxies cricket `:14318` |
 | `POST /api/demo/stand` | Tip recovery upright snap (write-controls) |
-| `POST /api/demo/recalibrate` | Required after Go2+Z1 load; parks the Z1 at arm-ready; also tip recovery (Bare Go2 auto-stands after load) |
-| `POST /api/demo/walk` | Apply Go2 rsl-rl walk skill (`velocity_commands` `[0.35,0,0]`) |
+| `POST /api/demo/recalibrate` | `/simple` auto-stands both twins after load (Go2+Z1 parks arm-ready); footer RESET is tip recovery; classic demo bar still asks Recalibrate on Go2+Z1 |
+| `POST /api/demo/walk` | Apply Go2 rsl-rl walk skill (default `velocity_commands` `[0.35,0,0]`; optional body joystick) |
 | `POST /api/demo/stop` | Cancel in-flight `ExecuteRskill` (no e-stop latch) + Hub stand |
 | `POST /api/skill/execute` | Dispatch `ExecuteRskill` (write-controls; demo Apply for non-walk picks) |
 | `POST /api/demo/load` | Cold-reload Bare Go2 or Go2+Z1 (`{"preset":…}`) |

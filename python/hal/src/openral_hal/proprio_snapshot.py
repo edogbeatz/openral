@@ -53,6 +53,9 @@ class ProprioFrame:
             clock-less / wall-clock HAL. Captured here so the publisher
             thread can emit ``/clock`` without touching the simulator.
         policy_state: Optional simulator-native checkpoint state vector.
+        qpos: Full MuJoCo ``MjData.qpos`` copied as plain floats, or ``None``
+            when the HAL has no ``mujoco_handles`` (real hardware). A laptop
+            kinematic viewer consumes this instead of HAL camera pixels.
     """
 
     state: JointState
@@ -61,6 +64,7 @@ class ProprioFrame:
     base_twist: tuple[float, ...]
     sim_time_ns: int | None = None
     policy_state: tuple[float, ...] | None = None
+    qpos: tuple[float, ...] | None = None
 
 
 class ProprioSnapshot:
@@ -80,10 +84,13 @@ class ProprioSnapshot:
         ...     base_pose=(1.0, 2.0, 0.5),
         ...     base_pose_6dof=None,
         ...     base_twist=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        ...     qpos=(0.0, 0.0, 0.7, 1.0, 0.0, 0.0, 0.0),
         ... )
         >>> snap.set(frame)
         >>> snap.latest().base_pose
         (1.0, 2.0, 0.5)
+        >>> snap.latest().qpos[2]
+        0.7
     """
 
     def __init__(self) -> None:

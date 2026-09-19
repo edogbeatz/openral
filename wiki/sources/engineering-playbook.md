@@ -1,7 +1,7 @@
 ---
 type: source
 tags: [openral, claude-md, rules, safety, licensing]
-updated: 2026-09-17
+updated: 2026-09-19
 source: CLAUDE.md
 source_kind: in-repo
 ---
@@ -50,6 +50,8 @@ the PR checklist, and the exception hierarchy. When this wiki and
 ## Where it points
 
 Repo layout → [[sources/repo-map]]. Public symbols → `docs/METHODS.md`.
+Operator `/simple` → `docs/quickstart/dashboard.md` (agents run
+`just dashboard` / `scripts/start-app.sh` when asked to start the app).
 Releasing → `docs/contributing/releasing.md` (one lockstep SemVer across
 root and every `python/*`; never hand-edit a `version =`). Decisions →
 `docs/decisions.md`, with the ADR log itself in the private

@@ -13,7 +13,10 @@ in that package's `README.md` and `VERIFICATION.md`.
 Spawned by `openral deploy sim --foxglove` (default off). Standalone:
 `ros2 launch openral_foxglove_bringup foxglove.launch.py`. Bridge binds
 `127.0.0.1:8765`. Viewer: `ws://localhost:8765` (port-forward if the graph
-is remote).
+is remote). `https://app.foxglove.dev` is HTTPS and will not open a remote
+plain `ws://` (mixed content); `ws://localhost` after an SSH tunnel is the
+supported web path. A public URL would need `wss://` plus auth — not
+shipped; see [[analyses/cloud-browser-needs-tunnel]].
 
 ## What it is not
 
@@ -84,4 +87,4 @@ that are in the file, not in the viewer's defaults:
 Full session write-up: [[analyses/foxglove-web-meshes-need-package-uri]].
 
 Related: [[concepts/deploy-sim-visualization]], [[entities/go2]],
-[[concepts/second-brain]].
+[[analyses/cloud-browser-needs-tunnel]], [[concepts/second-brain]].

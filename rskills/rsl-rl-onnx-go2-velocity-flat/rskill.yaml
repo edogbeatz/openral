@@ -49,10 +49,15 @@ latency_budget:
 # `velocity_commands` term is a 3-D joystick. YAML here is the default.
 # Per-call override (no YAML edit): ExecuteRskill.goal_params_json
 # `{"velocity_commands": [vx, vy, yaw]}` or VLASpec.extra / obs key.
+# Finite horizon: walk, then last coast_to_stand_s command [0,0,0] so the
+# ONNX stands the dog. max_execution_s stays the abort backstop. Without
+# this, deadline idle-holds a mid-gait waypoint and the twin falls.
 policy_extras:
   velocity_commands: [0.5, 0.0, 0.0]
   onnx_filename: "policy.onnx"
   deploy_yaml: "params/deploy.yaml"
+  horizon_s: 57.0
+  coast_to_stand_s: 3.0
 
 # Reasoner tool palette surfaces this as execute_rskill.goal_params_json.
 goal_params_schema:
@@ -82,7 +87,9 @@ description: >
   Isaac Lab / Unitree rsl-rl ONNX locomotion for the 12-DoF Go2. Loads
   policy.onnx plus params/deploy.yaml and emits absolute JOINT_POSITION
   targets. Velocity command defaults to policy_extras; execute_rskill /
-  verify override via goal_params_json without editing YAML. Does not
+  verify override via goal_params_json without editing YAML. Last
+  coast_to_stand_s seconds command [0, 0, 0] so the dog stands before
+  the goal ends (idle-hold of a mid-gait waypoint falls). Does not
   claim gait quality.
 
 actions:

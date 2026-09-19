@@ -37,7 +37,7 @@ metadata:
 
 ## What it is
 
-An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). Isaac Lab / Unitree rsl-rl ONNX locomotion for the 12-DoF Go2. Loads policy.onnx plus params/deploy.yaml and emits absolute JOINT_POSITION targets. Velocity command defaults to policy_extras; execute_rskill / verify override via goal_params_json without editing YAML. Does not claim gait quality.
+An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). Isaac Lab / Unitree rsl-rl ONNX locomotion for the 12-DoF Go2. Loads policy.onnx plus params/deploy.yaml and emits absolute JOINT_POSITION targets. Velocity command defaults to policy_extras; execute_rskill / verify override via goal_params_json without editing YAML. Last 3 s command [0, 0, 0] so the dog stands before the goal ends. Does not claim gait quality.
 
 ## Capabilities
 

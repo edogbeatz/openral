@@ -38,6 +38,12 @@ orientation/angular velocity, append a 3-D velocity command, run
 `policy.onnx`, write `default_joint_pos + action * scale` as a 12-D
 `JOINT_POSITION` action. No cartesian representation. No cameras.
 
+The last `coast_to_stand_s` seconds of `horizon_s` command `[0, 0, 0]`
+so the ONNX stands the dog before the goal ends. Without that, the
+runner idle-holds the last mid-gait waypoint under gravity and the
+twin falls. `horizon_s: 57` succeeds standing; `max_execution_s: 60`
+is the abort backstop.
+
 ## Upstream model / training
 
 - **Checkpoint:** `hf://diasAiMaster/unitree-go2-velocity-flat`
@@ -97,6 +103,8 @@ policy_extras:
   velocity_commands: [0.5, 0.0, 0.0]   # default forward walk
   onnx_filename: policy.onnx
   deploy_yaml: params/deploy.yaml
+  horizon_s: 57.0                      # succeed after coast, not deadline abort
+  coast_to_stand_s: 3.0                # last 3 s command [0, 0, 0]
 ```
 
 Override **without editing this YAML** (highest wins):
@@ -156,6 +164,8 @@ policy_extras:
   velocity_commands: [0.5, 0.0, 0.0]
   onnx_filename: policy.onnx
   deploy_yaml: params/deploy.yaml
+  horizon_s: 57.0
+  coast_to_stand_s: 3.0
 goal_params_schema:
   type: object
   properties:

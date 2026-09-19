@@ -38,6 +38,7 @@ __all__ = [
     "record_action",
     "record_ee_poses",
     "record_joint_state",
+    "record_qpos",
     "record_sensor_frame_attrs",
 ]
 
@@ -70,6 +71,9 @@ def modality_for_encoding(encoding: object) -> str:
 # humanoid doesn't push past OTLP's per-attribute size limits. Spans
 # stay readable in Jaeger and the dashboard ring stays bounded.
 _MAX_JOINTS = 64
+# Humanoid floating-base models sit well under this; a 100-DoF future
+# twin still fits one OTLP array attribute.
+_MAX_QPOS = 128
 _MAX_EE_FRAMES = 8
 # Thumbnail target — a DASHBOARD CARD only, no VLA ever reads it (policies
 # get frames in-process from the aggregator).
@@ -144,6 +148,23 @@ def record_joint_state(
         )
     if stamp_ns is not None:
         span.set_attribute(semconv.HAL_JOINT_STAMP_NS, int(stamp_ns))
+
+
+def record_qpos(span: Span, *, qpos: Iterable[float]) -> None:
+    """Attach the full MuJoCo ``qpos`` vector to a ``hal.read_state`` span.
+
+    This is the pose stream a laptop kinematic viewer polls
+    (``GET /api/qpos``). It is **not** a camera frame: copying ``nq``
+    floats is cheap on the existing capture; an extra EGL ``mjr_readPixels``
+    is not. Truncated to ``_MAX_QPOS``. Empty input is a no-op so a
+    missing handle cannot blank a previously good sample.
+    """
+    values = [float(v) for v in qpos]
+    if not values:
+        return
+    clipped = values[:_MAX_QPOS]
+    span.set_attribute(semconv.HAL_QPOS, _r3(clipped))
+    span.set_attribute(semconv.HAL_NQ, len(clipped))
 
 
 def record_action(
@@ -313,15 +334,18 @@ def emit_sensor_frame_span(
 def _jpeg_thumbnail(img: Any) -> bytes:
     """Downscale ``img`` into the dashboard JPEG envelope and return the bytes.
 
-    LANCZOS on the shrink, q80, 4:4:4 chroma — the previous BICUBIC / q60 /
-    4:2:0 envelope was cheap and looked fine at card-size, and looks like
-    mud once a single camera fills the visual area.
+    BILINEAR on the shrink, q80, 4:4:4 chroma. LANCZOS of two 640×480
+    Go2 cameras at 15–25 Hz sat on the HAL executor next to physics and
+    made Bare Go2 tiles hitch; BILINEAR is the video-thumbnail filter
+    and is several times cheaper at this size. The previous BICUBIC /
+    q60 / 4:2:0 envelope looked like mud once a single camera fills the
+    visual area — keep the 480×360 q80 envelope.
     """
     from PIL import Image
 
     if img.mode != "RGB":
         img = img.convert("RGB")
-    img.thumbnail((_THUMB_MAX_WIDTH, _THUMB_MAX_HEIGHT), Image.Resampling.LANCZOS)
+    img.thumbnail((_THUMB_MAX_WIDTH, _THUMB_MAX_HEIGHT), Image.Resampling.BILINEAR)
     buf = io.BytesIO()
     img.save(
         buf,
@@ -335,14 +359,22 @@ def _jpeg_thumbnail(img: Any) -> bytes:
     return buf.getvalue()
 
 
-def encode_rgb_thumbnail(rgb: Any) -> bytes | None:
+def encode_rgb_thumbnail(rgb: Any, *, rotate_180: bool = False) -> bytes | None:
     """Encode an HWC uint8 RGB ndarray as a small JPEG suitable for OTLP.
 
     Returns ``None`` when Pillow isn't importable so producers can keep
     the call site unconditional without paying for an ImportError on
     headless test runners. Resizes to fit within
     ``_THUMB_MAX_WIDTH x _THUMB_MAX_HEIGHT`` preserving aspect ratio;
-    encodes at JPEG quality ``_THUMB_JPEG_QUALITY``.
+    encodes at JPEG quality ``_THUMB_JPEG_QUALITY``. ``rotate_180`` is
+    the dashboard display flip — Pillow's rotate, not a NumPy copy of
+    the 640×480 frame that already lives next to physics.
+
+    Example:
+        >>> import numpy as np
+        >>> jpeg = encode_rgb_thumbnail(np.zeros((2, 2, 3), dtype=np.uint8))
+        >>> jpeg is None or jpeg[:2] == bytes((0xFF, 0xD8))
+        True
     """
     try:
         from PIL import Image
@@ -352,6 +384,8 @@ def encode_rgb_thumbnail(rgb: Any) -> bytes | None:
         img = Image.fromarray(rgb)
     except Exception:
         return None
+    if rotate_180:
+        img = img.transpose(Image.Transpose.ROTATE_180)
     return _jpeg_thumbnail(img)
 
 

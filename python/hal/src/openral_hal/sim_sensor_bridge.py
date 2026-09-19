@@ -245,6 +245,45 @@ def _rgb_image_frame_id(sensor: Any) -> str:
     return str(sensor.name)
 
 
+def _rgb8_payload(arr: Any) -> bytes:
+    """Single-copy uint8 RGB bytes for ``sensor_msgs/Image.data``.
+
+    ``bytes(arr.astype("uint8").tobytes())`` always copies even when ``arr``
+    is already C-contiguous uint8 (NumPy's default ``copy=True``). Two
+    640×480 Go2 cameras at 15 Hz is ~55 MB/s of dead copies on the HAL
+    executor next to physics — the GIL-held ~900 KiB convert
+    ``sensor_leg`` already capped on the real path. ``ascontiguousarray``
+    is a view when the dtype/layout already match.
+
+    Example:
+        >>> import numpy as np
+        >>> len(_rgb8_payload(np.zeros((2, 2, 3), dtype=np.uint8)))
+        12
+    """
+    import numpy as np
+
+    contiguous = np.ascontiguousarray(arr, dtype=np.uint8)
+    return contiguous.tobytes()
+
+
+def _publisher_has_subscribers(pub: Any) -> bool:
+    """Whether ``pub`` currently has a ROS subscriber, failing open.
+
+    Skipping a 640×480 RGB8 publish when Foxglove is on ``/compressed``
+    and WorldState is not subscribed is the whole point of native JPEG.
+    Unknown / missing ``get_subscription_count`` must still publish — a
+    VLA reading the aggregator through the ROS tee cannot go blind
+    because a test double has no count API.
+    """
+    getter = getattr(pub, "get_subscription_count", None)
+    if not callable(getter):
+        return True
+    try:
+        return int(getter()) > 0
+    except Exception:  # reason: missing/broken count API must not drop the VLA tee
+        return True
+
+
 def _optical_frame_rgb_cameras(sensors: Any) -> list[Any]:
     """RGB camera specs that own a dedicated ``*_optical_frame``.
 
@@ -2606,6 +2645,11 @@ class SimSensorBridge:
         # Advertised lazily, keyed by camera name — a manifest camera earns its
         # topic on its first real frame (see _advertise_camera).
         self._image_pubs: dict[str, Any] = {}
+        # Native JPEG siblings of the raw Image topics. Foxglove Image panels
+        # subscribe here so the graph does not need ``image_transport
+        # republish`` (and so a 640×480 RGB8 copy is not forced just to
+        # feed the viewer).
+        self._compressed_pubs: dict[str, Any] = {}
         self._camera_qos: Any = None
         # RGB CameraInfo per camera: cuVSLAM/nvblox need the pinhole intrinsics
         # + a TF-valid frame, which plain RGB streams don't otherwise carry.
@@ -2785,9 +2829,14 @@ class SimSensorBridge:
             with contextlib.suppress(Exception):  # reason: renderer GL ctx may be gone
                 self._cinecam_renderer.close()
             self._cinecam_renderer = None
-        for pub in (*self._image_pubs.values(), *self._camera_info_pubs.values()):
+        for pub in (
+            *self._image_pubs.values(),
+            *self._compressed_pubs.values(),
+            *self._camera_info_pubs.values(),
+        ):
             self._node.destroy_publisher(pub)
         self._image_pubs.clear()
+        self._compressed_pubs.clear()
         self._camera_info_pubs.clear()
         self._camera_info_specs.clear()
         self._image_obs_key.clear()
@@ -2824,7 +2873,7 @@ class SimSensorBridge:
     def _setup_cameras(self) -> None:
         if not hasattr(self._hal, "read_images"):
             return
-        rgb = [s for s in self._description.sensors if s.modality == "rgb"]
+        rgb = [s for s in self._description.sensors if s.modality == "rgb" and s.sim_render]
         if not rgb:
             return
         from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
@@ -2900,6 +2949,34 @@ class SimSensorBridge:
         )
         return pub
 
+    def _publish_compressed(self, name: str, stamp: Any, frame_id: str, jpeg: bytes) -> None:
+        """Publish one JPEG on ``/openral/cameras/<name>/image/compressed``.
+
+        Advertises lazily, same as ``_advertise_camera``. The payload is the
+        dashboard thumbnail already encoded for the OTel span — one JPEG,
+        two consumers (dashboard MJPEG + Foxglove Image) — instead of a
+        second full-res ``image_transport`` encode of the raw RGB8 topic.
+        """
+        from sensor_msgs.msg import CompressedImage
+
+        pub = self._compressed_pubs.get(name)
+        if pub is None:
+            pub = self._node.create_publisher(
+                CompressedImage,
+                f"/openral/cameras/{name}/image/compressed",
+                self._camera_qos,
+            )
+            self._compressed_pubs[name] = pub
+            self._node.get_logger().info(
+                f"SimSensorBridge: advertising /openral/cameras/{name}/image/compressed"
+            )
+        msg = CompressedImage()
+        msg.header.stamp = stamp
+        msg.header.frame_id = frame_id
+        msg.format = "jpeg"
+        msg.data = jpeg
+        pub.publish(msg)
+
     def _publish_images(self) -> None:
         """Republish cached camera frames from the HAL as sensor_msgs/Image.
 
@@ -2909,8 +2986,11 @@ class SimSensorBridge:
         ``_image_obs_key``) lets LIBERO-style scenes (keyed by VLA slot
         ``camera1`` / ``camera2``) coexist with robocasa real-name keys.
 
-        Encoding handles mono8 / rgb8 / rgba8 arrays automatically. Frame
-        data is copied bytewise — no compression hop.
+        Encoding handles mono8 / rgb8 / rgba8 arrays automatically. Raw RGB8
+        is published only while something is subscribed (WorldState / a VLA
+        tee). Foxglove Image panels consume the native JPEG on
+        ``/image/compressed`` — the same bytes as the dashboard thumbnail —
+        so a 640×480 GIL copy is not forced just to feed the viewer.
 
         An OTel ``sensors.read_latest`` span (with JPEG thumbnail) is emitted
         at most at 25 Hz per camera so the dashboard MJPEG tiles track the
@@ -2964,8 +3044,9 @@ class SimSensorBridge:
             msg.encoding = "mono8" if c == 1 else "rgb8" if c == _RGB_CHANNELS else "rgba8"
             msg.is_bigendian = 0
             msg.step = int(w * c)
-            msg.data = bytes(arr.astype("uint8").tobytes())
-            pub.publish(msg)
+            if _publisher_has_subscribers(pub):
+                msg.data = _rgb8_payload(arr)
+                pub.publish(msg)
             info_pub = self._camera_info_pubs.get(name)
             if info_pub is not None:
                 info = self._rgb_camera_info(name, int(w), int(h), stamp)
@@ -2978,12 +3059,15 @@ class SimSensorBridge:
                 continue
             self._last_thumb_ns[name] = now_ns
             # Display-only 180° flip for the dashboard thumbnail (the published
-            # Image above stays raw for the policy/world_state path). Keeps this
-            # emitter's thumbnail in the same orientation as world_state's.
-            thumb_arr = (
-                arr[::-1, ::-1] if (self._dashboard_flip_180 and c == _RGB_CHANNELS) else arr
+            # Image above stays raw for the policy/world_state path). Pillow
+            # rotates; do not numpy-copy the 640×480 frame on this executor.
+            thumb = (
+                encode_rgb_thumbnail(arr, rotate_180=self._dashboard_flip_180)
+                if c == _RGB_CHANNELS
+                else None
             )
-            thumb = encode_rgb_thumbnail(thumb_arr) if c == _RGB_CHANNELS else None
+            if thumb is not None:
+                self._publish_compressed(name, stamp, msg.header.frame_id, thumb)
             with tracer.start_as_current_span("sensors.read_latest") as span:
                 span.set_attribute("openral.sensors.source", name)
                 record_sensor_frame_attrs(

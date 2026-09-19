@@ -1,0 +1,87 @@
+# rSkill manifest — gym spring_jump ONNX for the 12-DoF Go2
+# Wraps: Renkunzhao/legged_rl_deploy policies/go2/My_unitree_go2_gym/spring_jump
+# Adapter: openral_sim.policies.rsl_rl_onnx  (model_family: rsl_rl_onnx)
+#
+# Same family as velocity-flat and mjlab hop. Different obs assembly:
+# 47-D × 10 frames = 470-D, **frame-major** (Isaac Gym frame_stack), zero
+# warmup, constants + joystick A as the jump trigger. NOT SmolVLA.
+# kind stays `vla` so execute_rskill / make_policy dispatch through the
+# existing family token. Weights are fetched at load, never vendored.
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-rsl_rl_onnx-go2-spring_jump-fp32"
+version: "0.1.0"
+license: "unknown"
+role: "s1"
+kind: "vla"
+model_family: "rsl_rl_onnx"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+embodiment_tags:
+  - "go2"
+  # Same 12-D ONNX on the 19-DoF composite via hold-pad 12→19. Hop quality
+  # on the armed twin is unclaimed — the policy trained on the bare dog.
+  - "go2_z1"
+
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "onnx"
+quantization:
+  dtype: "fp32"
+  backend: "onnx"
+weights_uri: "local://rskills/rsl-rl-onnx-go2-spring-jump"
+
+# ── Execution semantics ────────────────────────────────────────────────────
+chunk_size: 1
+latency_budget:
+  per_chunk_ms: 20.0
+  max_execution_s: 8.0
+
+# Joystick A is the jump trigger (YAML default 1.0 so Apply hops).
+# Per-call override via observation jump_trigger / joystick_buttons.
+policy_extras:
+  velocity_commands: [0.0, 0.0, 0.0]
+  jump_trigger: 1.0
+  onnx_filename: "policy.onnx"
+  deploy_yaml: "params/deploy.yaml"
+  onnx_url: "https://raw.githubusercontent.com/Renkunzhao/legged_rl_deploy/master/policies/go2/My_unitree_go2_gym/spring_jump/policy.onnx"
+
+goal_params_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    jump_trigger:
+      type: number
+      description: >
+        Gamepad A (0 or 1). Default 1 requests the one-shot jump.
+        0 holds the spring-jump stand without jumping.
+
+starting_pose: [0.0, 0.8, -1.5, 0.0, 0.8, -1.5, 0.0, 1.0, -1.5, 0.0, 1.0, -1.5]
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+paper_url: "https://github.com/Renkunzhao/legged_rl_deploy"
+
+description: >
+  Isaac Gym rsl-rl ONNX one-shot spring jump for the 12-DoF Go2. Loads
+  policy.onnx (fetched at runtime; not vendored) plus in-tree
+  params/deploy.yaml and emits absolute JOINT_POSITION targets. Observation
+  is 470-D frame-major (constants + joystick A + joints, history 10).
+  License of the ONNX is unknown (loader warns ``rskill.unknown_license``;
+  ``is_commercial_use_allowed`` is false). Dashboard hop Apply.
+
+actions:
+  - "navigate"
+objects:
+  - "terrain"
+scenes:
+  - "flat"
+
+action_contract:
+  dim: 12
+  representation: "joint_positions"
+  joint_units: "radians"

@@ -1,4 +1,4 @@
-"""Opt-in finite horizon for scripted (non-learned) VLA shims.
+"""Opt-in finite horizon for scripted VLA shims and rsl-rl walk stand-down.
 
 OpenRAL VLAs never self-terminate. ``latency_budget.max_execution_s`` is an
 **abort** (``deadline_exceeded``), not ``ExecuteRskill`` success. A scripted
@@ -7,7 +7,9 @@ and/or ``horizon_ticks`` so ``_PolicyAdapterSkill._step_impl`` can raise
 ``ROSRskillGoalSatisfied`` after a finite chunk run — then the reasoner logs
 ``execute_rskill succeeded``.
 
-Learned VLAs leave both unset and keep the open-loop deadline path.
+``rsl_rl_onnx`` walk uses the same ``horizon_s`` so the last
+``coast_to_stand_s`` seconds can command ``[0,0,0]`` and the goal can
+succeed standing instead of aborting mid-gait.
 """
 
 from __future__ import annotations

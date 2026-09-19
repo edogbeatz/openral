@@ -592,10 +592,9 @@ def test_reveal_buckets_exist_and_start_unfed() -> None:
         assert key in topics, f"{key} bucket missing — its card would never reveal"
         assert not topics[key].get("ts_unix"), f"{key} claims a timestamp before any ingest"
     cameras = topics["perception"]["cameras"]
-    assert set(cameras) >= {"front", "top"}
-    assert cameras["front"]["role"] == "main"
+    assert set(cameras) >= {"top"}
+    assert "front" not in cameras
     assert cameras["top"]["role"] == "side"
-    assert "thumbnail_jpeg_b64" not in cameras["front"]
     assert "thumbnail_jpeg_b64" not in cameras["top"]
 
 
@@ -633,10 +632,10 @@ def test_reveal_buckets_gain_a_timestamp_from_their_producer_span(
     topics = store.snapshot()["topics"]
     for key in ("reasoner", "slam", "pointcloud", "scene_objects", "world_state", "robot_state"):
         assert topics[key]["ts_unix"] > 0, f"{key} has no ts_unix; its card stays hidden"
-    # Cameras stay mounted from first paint (hero front+top). Other cards
+    # Cameras stay mounted from first paint (hero top). Other cards
     # still hide until their producer stamps ts_unix.
-    assert "front" in topics["perception"]["cameras"]
-    assert topics["perception"]["cameras"]["front"]["role"] == "main"
+    assert "top" in topics["perception"]["cameras"]
+    assert topics["perception"]["cameras"]["top"]["role"] == "side"
 
 
 def test_hero_camera_keys_match_go2_and_go2_z1_manifests() -> None:

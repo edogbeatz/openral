@@ -231,6 +231,12 @@ clip = [
     # pose + recency without it. torch is already pulled by dev/sim.
     "open-clip-torch>=2.24",
 ]
+typesafe = [
+    # Opt-in TypeSafe System One (Jev) judgment sidecar for the S2 reasoner.
+    # MIT SDK; cloud API. Off unless OPENRAL_TYPESAFE=1 and TYPESAFE_API_KEY.
+    # Not OpenRAL S1 — see wiki/analyses/typesafe-in-openral.md.
+    "typesafe-sdk>=0.6.0",
+]
 dataset = [
     "openral-dataset[lerobot]",  # reason: LeRobotDataset v3 bridge tests; keeps heavy dataset extras out of base env.
 ]

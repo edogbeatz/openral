@@ -168,6 +168,61 @@ def test_hal_read_state_error_span_does_not_clear_joint_state() -> None:
     assert after["positions"] == [0.1, 0.2, 0.3], after
 
 
+def test_hal_read_state_populates_qpos() -> None:
+    """A Go2-width qpos vector on hal.read_state is the kinematic-viewer stream."""
+    store = TelemetryStore()
+    qpos = [0.0] * 7 + [0.1, 0.9, -1.8] * 4  # free joint + 12 Hub-ish legs
+    store.ingest_spans(
+        _wrap(
+            [
+                _make_span(
+                    "hal.read_state",
+                    attrs={
+                        "openral.hal.adapter": "go2mujocohal",
+                        "openral.hal.robot.model": "go2",
+                        "openral.hal.joint.names": ["FL_hip_joint"],
+                        "openral.hal.joint.positions": [0.1],
+                        "openral.hal.qpos": qpos,
+                        "openral.hal.nq": 19,
+                    },
+                )
+            ]
+        )
+    )
+    snap = store.snapshot()
+    rs = snap["topics"]["robot_state"]
+    assert rs["qpos"] == qpos
+    assert rs["nq"] == 19
+    frame = store.qpos_frame()
+    assert frame is not None
+    assert frame["nq"] == 19
+    assert frame["robot_id"] == "go2"
+    assert frame["qpos"] == qpos
+
+
+def test_hal_read_state_error_span_does_not_clear_qpos() -> None:
+    store = TelemetryStore()
+    qpos = [0.0] * 19
+    store.ingest_spans(
+        _wrap(
+            [
+                _make_span(
+                    "hal.read_state",
+                    attrs={
+                        "openral.hal.qpos": qpos,
+                        "openral.hal.nq": 19,
+                        "openral.hal.joint.names": ["FL_hip_joint"],
+                        "openral.hal.joint.positions": [0.0],
+                    },
+                )
+            ]
+        )
+    )
+    store.ingest_spans(_wrap([_make_span("hal.read_state", attrs={"openral.hal.adapter": "go2"})]))
+    assert store.qpos_frame() is not None
+    assert store.qpos_frame()["qpos"] == qpos
+
+
 def test_hal_send_action_populates_commands_topic() -> None:
     store = TelemetryStore()
     span = _make_span(
@@ -269,6 +324,25 @@ def test_sse_snapshot_omits_camera_thumbnails() -> None:
     sse = store.snapshot(include_camera_thumbs=False)["topics"]["perception"]["cameras"]["cam_top"]
     assert api["thumbnail_jpeg_b64"] == "AAA"
     assert "thumbnail_jpeg_b64" not in sse
+
+
+def test_camera_thumb_reads_without_cloning_the_snapshot() -> None:
+    """MJPEG must not deep-copy events/metrics just to read one JPEG."""
+    store = TelemetryStore()
+    span = _make_span(
+        "sensors.read_latest",
+        attrs={
+            "openral.sensors.source": "front",
+            "openral.sensors.thumbnail_jpeg_b64": "QUJD",
+        },
+    )
+    store.ingest_spans(_wrap([span]))
+    assert store.camera_thumb("front") == "QUJD"
+    assert store.camera_thumb("top") is None
+    assert store.camera_thumb("missing") is None
+    assert store.camera_known("front") is True
+    assert store.camera_known("top") is True  # hero slot exists empty
+    assert store.camera_known("missing") is False
 
 
 def test_safety_check_ledger_keeps_one_entry_per_check() -> None:

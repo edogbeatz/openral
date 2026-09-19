@@ -1,8 +1,9 @@
 """Unit tests for the ``rsl_rl_onnx`` ModelFamily + ONNX locomotion adapter.
 
 Exercises the real Hub ``params/deploy.yaml`` layout (copied under
-``tests/unit/fixtures/rsl_rl_onnx/``), the in-tree rSkill manifest, and a
-real ONNX Runtime session against a tiny fixture graph. No SmolVLA path.
+``tests/unit/fixtures/rsl_rl_onnx/``), the in-tree mjlab hop and gym
+spring-jump rSkills, and a real ONNX Runtime session against a tiny
+fixture graph. No SmolVLA path.
 """
 
 from __future__ import annotations
@@ -29,10 +30,18 @@ from openral_sim.policies.rsl_rl_onnx import (
     _projected_gravity_from_obs,
     apply_velocity_command_override,
     build_rsl_rl_observation,
+    coast_velocity_commands,
     decode_rsl_rl_joint_position,
+    euler_rpy_from_quat_xyzw,
+    gait_phase_2,
+    in_coast_to_stand_window,
     load_rsl_rl_deploy_yaml,
     projected_gravity_from_quat_xyzw,
+    resolve_coast_budget_s,
+    resolve_coast_to_stand_s,
     resolve_velocity_commands,
+    stack_rsl_rl_frame_major_history,
+    stack_rsl_rl_term_major_history,
     velocity_override_from_goal_params,
     write_zero_action_onnx,
 )
@@ -41,7 +50,11 @@ from structlog.testing import capture_logs
 
 _REPO = Path(__file__).resolve().parents[2]
 _MANIFEST = _REPO / "rskills" / "rsl-rl-onnx-go2-velocity-flat" / "rskill.yaml"
+_HOP_MANIFEST = _REPO / "rskills" / "rsl-rl-onnx-go2-hop-flat" / "rskill.yaml"
+_SPRING_MANIFEST = _REPO / "rskills" / "rsl-rl-onnx-go2-spring-jump" / "rskill.yaml"
 _DEPLOY = Path(__file__).resolve().parent / "fixtures" / "rsl_rl_onnx" / "deploy.yaml"
+_HOP_DEPLOY = _REPO / "rskills" / "rsl-rl-onnx-go2-hop-flat" / "params" / "deploy.yaml"
+_SPRING_DEPLOY = _REPO / "rskills" / "rsl-rl-onnx-go2-spring-jump" / "params" / "deploy.yaml"
 
 
 def test_family_token_is_canonical_and_registered() -> None:
@@ -67,6 +80,8 @@ def test_intree_manifest_from_yaml_accepts_rsl_rl_onnx() -> None:
     assert extras.get("onnx_filename") == "policy.onnx"
     assert extras.get("deploy_yaml") == "params/deploy.yaml"
     assert extras.get("velocity_commands") == [0.5, 0.0, 0.0]
+    assert extras.get("horizon_s") == 57.0
+    assert extras.get("coast_to_stand_s") == 3.0
     schema = manifest.goal_params_schema
     assert schema is not None
     assert schema["properties"]["velocity_commands"]["minItems"] == 3
@@ -108,6 +123,9 @@ def test_deploy_yaml_matches_hub_go2_velocity_flat() -> None:
         [-0.1, 0.9, -1.8, 0.1, 0.9, -1.8, -0.1, 0.9, -1.8, 0.1, 0.9, -1.8],
     )
     np.testing.assert_allclose(cfg.action_scale, np.full(12, 0.5))
+    assert cfg.term_history_lengths == (1, 1, 1, 1, 1, 1)
+    assert cfg.frame_dim == 45
+    assert cfg.gait_cycle_s is None
 
 
 def test_velocity_commands_come_from_extras_not_prompt() -> None:
@@ -116,6 +134,48 @@ def test_velocity_commands_come_from_extras_not_prompt() -> None:
         resolve_velocity_commands({"velocity_commands": [1.0, -0.2, 0.3]}),
         [1.0, -0.2, 0.3],
     )
+
+
+def test_coast_to_stand_zeros_joystick_in_the_trailing_window() -> None:
+    """Last coast_to_stand_s of the budget must command stand, not keep walking.
+
+    Deadline idle-hold of a mid-gait waypoint is what dumps the Go2.
+    """
+    walk = (0.5, 0.0, 0.0)
+    assert in_coast_to_stand_window(
+        elapsed_s=54.0, budget_s=57.0, coast_to_stand_s=3.0
+    )
+    np.testing.assert_allclose(
+        coast_velocity_commands(
+            walk, elapsed_s=54.0, budget_s=57.0, coast_to_stand_s=3.0
+        ),
+        [0.0, 0.0, 0.0],
+    )
+    assert not in_coast_to_stand_window(
+        elapsed_s=50.0, budget_s=57.0, coast_to_stand_s=3.0
+    )
+    np.testing.assert_allclose(
+        coast_velocity_commands(
+            walk, elapsed_s=50.0, budget_s=57.0, coast_to_stand_s=3.0
+        ),
+        walk,
+    )
+    np.testing.assert_allclose(
+        coast_velocity_commands(
+            walk, elapsed_s=99.0, budget_s=57.0, coast_to_stand_s=None
+        ),
+        walk,
+    )
+
+
+def test_coast_to_stand_defaults_on_rsl_rl_onnx_and_zero_disables() -> None:
+    assert resolve_coast_to_stand_s({}, family=RSL_RL_ONNX_FAMILY) == 3.0
+    assert resolve_coast_to_stand_s({}, family="zero") is None
+    assert resolve_coast_to_stand_s({"coast_to_stand_s": 0}, family=RSL_RL_ONNX_FAMILY) is None
+    assert resolve_coast_to_stand_s({"coast_to_stand_s": 2.5}) == 2.5
+    assert resolve_coast_budget_s({"horizon_s": 57.0}, max_execution_s=60.0) == 57.0
+    assert resolve_coast_budget_s({}, max_execution_s=60.0) == 60.0
+    assert resolve_coast_budget_s({}) is None
 
 
 def test_goal_params_override_beats_yaml_default() -> None:
@@ -226,7 +286,7 @@ def test_joint_order_decides_which_leg_an_action_reaches() -> None:
     np.testing.assert_allclose(sdk[0], -0.1)
 
 
-def _zero_action_policy(tmp_path: Path) -> Any:
+def _zero_action_policy(tmp_path: Path, extra: dict[str, object] | None = None) -> Any:
     """Build the real adapter over a zero-action ONNX graph + the Hub deploy.yaml."""
     cfg = load_rsl_rl_deploy_yaml(_DEPLOY)
     skill_dir = tmp_path / "skill"
@@ -241,17 +301,42 @@ def _zero_action_policy(tmp_path: Path) -> Any:
         observation_dim=cfg.observation_dim,
         action_dim=cfg.action_dim,
     )
+    merged: dict[str, object] = {"velocity_commands": [0.4, 0.0, 0.0]}
+    if extra:
+        merged.update(extra)
 
     env = SimpleNamespace(
         vla=VLASpec(
             id=RSL_RL_ONNX_FAMILY,
             weights_uri=str(skill_dir),
             device="cpu",
-            extra={"velocity_commands": [0.4, 0.0, 0.0]},
+            extra=merged,
         ),
         scene=SimpleNamespace(cameras=()),
     )
     return make_policy(env)  # type: ignore[arg-type]
+
+
+def _stand_obs(cfg: Any) -> dict[str, object]:
+    return {
+        "state": cfg.default_joint_pos,
+        "joint_vel": np.zeros(12, dtype=np.float32),
+        "base_twist": (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        "base_pose": {
+            "xyz": (0.0, 0.0, 0.4),
+            "quat_xyzw": (0.0, 0.0, 0.0, 1.0),
+        },
+    }
+
+
+def _frame_velocity_commands(cfg: Any, frame: np.ndarray) -> np.ndarray:
+    offset = 0
+    for name, scale in cfg.observation_terms:
+        width = int(scale.shape[0])
+        if name == "velocity_commands":
+            return np.asarray(frame[offset : offset + width], dtype=np.float32)
+        offset += width
+    raise AssertionError("deploy.yaml has no velocity_commands term")
 
 
 def test_goal_params_override_reaches_the_real_adapter(tmp_path: Path) -> None:
@@ -275,6 +360,11 @@ def test_goal_params_override_reaches_the_real_adapter(tmp_path: Path) -> None:
         # Empty payload restores the manifest default rather than sticking.
         assert apply_velocity_command_override(policy, "") is None
         np.testing.assert_allclose(policy._velocity_commands, [0.4, 0.0, 0.0])
+        # Second execute_rskill reuses the resident adapter; leftover last_action
+        # is the Go2 "stands still on the next skill" observation leak.
+        policy._last_action = np.ones(12, dtype=np.float32)
+        policy.reset()
+        np.testing.assert_allclose(policy._last_action, 0.0)
     finally:
         policy.close()
 
@@ -325,6 +415,46 @@ def test_make_policy_emits_12d_joint_positions(tmp_path: Path) -> None:
         np.testing.assert_allclose(policy._velocity_commands, [1.0, 0.0, 0.25])
         policy.set_velocity_commands(None)
         np.testing.assert_allclose(policy._velocity_commands, [0.4, 0.0, 0.0])
+        assert policy._coast_to_stand_s == 3.0
+        assert policy._coast_budget_s == 57.0
+    finally:
+        policy.close()
+
+
+def test_adapter_zeros_joystick_on_the_step_clock(tmp_path: Path) -> None:
+    """The ONNX obs must see [0,0,0] in the trailing window, not keep walking.
+
+    Helpers already cover the window arithmetic. This is the adapter
+    ``step()`` path: deadline idle-hold of a mid-gait waypoint is what
+    dumps the Go2, so the joystick in the recorded frame must actually
+    change.
+    """
+    pytest.importorskip("onnx")
+    pytest.importorskip("onnxruntime")
+
+    cfg = load_rsl_rl_deploy_yaml(_DEPLOY)
+    policy = _zero_action_policy(
+        tmp_path,
+        extra={"horizon_s": 1.0, "coast_to_stand_s": 0.4, "velocity_commands": [0.4, 0.0, 0.0]},
+    )
+    try:
+        policy.reset()
+        obs = _stand_obs(cfg)
+        walk_ticks = int((1.0 - 0.4) / cfg.step_dt)
+        for _ in range(walk_ticks):
+            policy.step(obs, "")
+        np.testing.assert_allclose(
+            _frame_velocity_commands(cfg, policy._history[-1]),
+            [0.4, 0.0, 0.0],
+        )
+        while float(policy._step_index) * cfg.step_dt < 1.0:
+            policy.step(obs, "")
+        np.testing.assert_allclose(
+            _frame_velocity_commands(cfg, policy._history[-1]),
+            [0.0, 0.0, 0.0],
+        )
+        assert policy._coast_to_stand_s == 0.4
+        assert policy._coast_budget_s == 1.0
     finally:
         policy.close()
 
@@ -387,3 +517,322 @@ def test_attach_locomotion_proprio_copies_pose_and_override() -> None:
     )
     assert "base_ang_vel" not in empty
     assert "base_pose" not in empty
+
+
+def test_intree_hop_manifest_from_yaml() -> None:
+    manifest = RSkillManifest.from_yaml(str(_HOP_MANIFEST))
+    assert manifest.kind == "vla"
+    assert manifest.model_family == RSL_RL_ONNX_FAMILY
+    assert manifest.license.value == "unknown"
+    assert not manifest.is_commercial_use_allowed
+    assert manifest.weights_uri == "local://rskills/rsl-rl-onnx-go2-hop-flat"
+    extras = manifest.policy_extras
+    assert extras.get("onnx_filename") == "policy.onnx"
+    assert extras.get("deploy_yaml") == "params/deploy.yaml"
+    assert extras.get("velocity_commands") == [0.0, 0.0, 0.0]
+    assert str(extras.get("onnx_url", "")).startswith("https://")
+    assert "mjlab/hop/policy.onnx" in str(extras.get("onnx_url"))
+    assert manifest.starting_pose == [
+        0.1,
+        0.8,
+        -1.5,
+        -0.1,
+        0.8,
+        -1.5,
+        0.1,
+        1.0,
+        -1.5,
+        -0.1,
+        1.0,
+        -1.5,
+    ]
+    assert repo_name_is_canonical(
+        manifest.name, kind=manifest.kind, model_family=manifest.model_family
+    )
+    from openral_hal.go2 import GO2_HOP_JOINT_TARGETS, GO2_HOP_PD_KP, GO2_HOP_PD_KV
+
+    assert list(manifest.starting_pose) == list(GO2_HOP_JOINT_TARGETS)
+    assert GO2_HOP_PD_KP == 20.0
+    assert GO2_HOP_PD_KV == 0.5
+
+
+def test_hop_deploy_yaml_is_470d_term_major() -> None:
+    cfg = load_rsl_rl_deploy_yaml(_HOP_DEPLOY)
+    assert [name for name, _scale in cfg.observation_terms] == [
+        "gait_phase_2",
+        "velocity_commands",
+        "base_ang_vel_B",
+        "eulerZYX_rpy",
+        "joint_pos_rel",
+        "joint_vel_rel",
+        "last_action",
+    ]
+    assert cfg.frame_dim == 47
+    assert cfg.observation_dim == 470
+    assert cfg.term_history_lengths == (10, 10, 10, 10, 10, 10, 10)
+    assert cfg.history_order == "oldest_first"
+    assert cfg.history_warmup == "repeat_first"
+    assert cfg.history_layout == "term_major"
+    assert cfg.action_clip is None
+    assert cfg.constant_terms == ()
+    assert cfg.gait_cycle_s == 1.5
+    assert cfg.action_dim == 12
+    np.testing.assert_allclose(cfg.action_scale, np.full(12, 0.25))
+    np.testing.assert_allclose(
+        cfg.default_joint_pos,
+        [0.1, 0.8, -1.5, -0.1, 0.8, -1.5, 0.1, 1.0, -1.5, -0.1, 1.0, -1.5],
+    )
+    from openral_hal.go2 import GO2_HOP_JOINT_TARGETS
+
+    np.testing.assert_allclose(cfg.default_joint_pos, GO2_HOP_JOINT_TARGETS)
+    raw = _HOP_DEPLOY.read_text(encoding="utf-8")
+    assert "stiffness:" in raw
+    assert "damping:" in raw
+
+
+def test_gait_phase_and_identity_euler() -> None:
+    np.testing.assert_allclose(gait_phase_2(step_index=0, step_dt=0.02, cycle_s=1.5), [0.0, 1.0])
+    rpy = euler_rpy_from_quat_xyzw(np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32))
+    np.testing.assert_allclose(rpy, [0.0, 0.0, 0.0], atol=1e-6)
+
+
+def test_hop_history_repeat_first_then_rolls() -> None:
+    cfg = load_rsl_rl_deploy_yaml(_HOP_DEPLOY)
+    frame0 = np.arange(cfg.frame_dim, dtype=np.float32)
+    stacked0 = stack_rsl_rl_term_major_history(frame0, [], cfg)
+    assert stacked0.shape == (470,)
+    # oldest_first + empty history → ten copies of frame0, per term.
+    gait = stacked0[:20]
+    np.testing.assert_allclose(gait, np.tile(frame0[:2], 10))
+
+    frame1 = frame0 + 100.0
+    stacked1 = stack_rsl_rl_term_major_history(frame1, [frame0], cfg)
+    # lag 9..1 still frame0 (repeat_first / only one previous), lag 0 is frame1.
+    np.testing.assert_allclose(stacked1[0:18], np.tile(frame0[:2], 9))
+    np.testing.assert_allclose(stacked1[18:20], frame1[:2])
+
+
+def test_hop_frame_uses_gait_and_euler_not_projected_gravity() -> None:
+    cfg = load_rsl_rl_deploy_yaml(_HOP_DEPLOY)
+    gait = gait_phase_2(step_index=0, step_dt=cfg.step_dt, cycle_s=cfg.gait_cycle_s or 1.5)
+    frame = build_rsl_rl_observation(
+        config=cfg,
+        joint_pos=cfg.default_joint_pos,
+        joint_vel=np.zeros(12, dtype=np.float32),
+        base_ang_vel=np.array([0.1, -0.2, 0.3], dtype=np.float32),
+        projected_gravity=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        velocity_commands=np.array([0.0, 0.0, 0.0], dtype=np.float32),
+        last_action=np.zeros(12, dtype=np.float32),
+        gait_phase=gait,
+        euler_rpy=np.zeros(3, dtype=np.float32),
+    )
+    assert frame.shape == (47,)
+    np.testing.assert_allclose(frame[0:2], [0.0, 1.0])
+    np.testing.assert_allclose(frame[2:5], [0.0, 0.0, 0.0])
+    np.testing.assert_allclose(frame[5:8], [0.1, -0.2, 0.3])
+    np.testing.assert_allclose(frame[8:11], [0.0, 0.0, 0.0])
+    np.testing.assert_allclose(frame[11:23], 0.0)  # at default stand
+
+
+def _hop_zero_action_policy(tmp_path: Path) -> Any:
+    cfg = load_rsl_rl_deploy_yaml(_HOP_DEPLOY)
+    skill_dir = tmp_path / "hop_skill"
+    skill_dir.mkdir()
+    (skill_dir / "params").mkdir()
+    (skill_dir / "params" / "deploy.yaml").write_text(
+        _HOP_DEPLOY.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (skill_dir / "rskill.yaml").write_text(
+        _HOP_MANIFEST.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    write_zero_action_onnx(
+        skill_dir / "policy.onnx",
+        observation_dim=cfg.observation_dim,
+        action_dim=cfg.action_dim,
+    )
+    env = SimpleNamespace(
+        vla=VLASpec(
+            id=RSL_RL_ONNX_FAMILY,
+            weights_uri=str(skill_dir),
+            device="cpu",
+            extra={"velocity_commands": [0.0, 0.0, 0.0]},
+        ),
+        scene=SimpleNamespace(cameras=()),
+    )
+    return make_policy(env)  # type: ignore[arg-type]
+
+
+def test_hop_make_policy_emits_12d_and_resets_history(tmp_path: Path) -> None:
+    pytest.importorskip("onnx")
+    pytest.importorskip("onnxruntime")
+
+    cfg = load_rsl_rl_deploy_yaml(_HOP_DEPLOY)
+    policy = _hop_zero_action_policy(tmp_path)
+    try:
+        policy.reset()
+        obs = {
+            "state": cfg.default_joint_pos,
+            "joint_vel": np.zeros(12, dtype=np.float32),
+            "base_twist": (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            "base_pose": {
+                "xyz": (0.0, 0.0, 0.4),
+                "quat_xyzw": (0.0, 0.0, 0.0, 1.0),
+            },
+        }
+        action = policy.step(obs, "hop")
+        assert action.shape == (12,)
+        np.testing.assert_allclose(action, cfg.default_joint_pos, atol=1e-5)
+        assert policy._step_index == 1
+        assert len(policy._history) == 1
+        policy.reset()
+        assert policy._step_index == 0
+        assert len(policy._history) == 0
+    finally:
+        policy.close()
+
+
+def test_intree_spring_jump_manifest_from_yaml() -> None:
+    manifest = RSkillManifest.from_yaml(str(_SPRING_MANIFEST))
+    assert manifest.kind == "vla"
+    assert manifest.model_family == RSL_RL_ONNX_FAMILY
+    assert manifest.license.value == "unknown"
+    assert not manifest.is_commercial_use_allowed
+    assert manifest.weights_uri == "local://rskills/rsl-rl-onnx-go2-spring-jump"
+    extras = manifest.policy_extras
+    assert extras.get("onnx_filename") == "policy.onnx"
+    assert extras.get("deploy_yaml") == "params/deploy.yaml"
+    assert extras.get("jump_trigger") == 1.0
+    assert "spring_jump/policy.onnx" in str(extras.get("onnx_url"))
+    assert manifest.starting_pose == [
+        0.0,
+        0.8,
+        -1.5,
+        0.0,
+        0.8,
+        -1.5,
+        0.0,
+        1.0,
+        -1.5,
+        0.0,
+        1.0,
+        -1.5,
+    ]
+    assert repo_name_is_canonical(
+        manifest.name, kind=manifest.kind, model_family=manifest.model_family
+    )
+
+
+def test_spring_jump_deploy_yaml_is_470d_frame_major() -> None:
+    cfg = load_rsl_rl_deploy_yaml(_SPRING_DEPLOY)
+    assert [name for name, _scale in cfg.observation_terms] == [
+        "constants",
+        "joystick_buttons",
+        "base_ang_vel_B",
+        "eulerZYX_rpy",
+        "joint_pos",
+        "joint_vel",
+        "last_action",
+    ]
+    assert cfg.frame_dim == 47
+    assert cfg.observation_dim == 470
+    assert cfg.term_history_lengths == (10, 10, 10, 10, 10, 10, 10)
+    assert cfg.history_order == "oldest_first"
+    assert cfg.history_warmup == "zero"
+    assert cfg.history_layout == "frame_major"
+    assert cfg.action_clip == 100.0
+    assert cfg.gait_cycle_s is None
+    assert len(cfg.constant_terms) == 1
+    np.testing.assert_allclose(cfg.constant_terms[0][1], [0.0, 0.0, 0.7, 0.0])
+    np.testing.assert_allclose(cfg.action_scale, np.full(12, 0.25))
+    manifest = RSkillManifest.from_yaml(str(_SPRING_MANIFEST))
+    np.testing.assert_allclose(cfg.default_joint_pos, manifest.starting_pose)
+
+
+def test_spring_jump_frame_major_zero_warmup_then_rolls() -> None:
+    cfg = load_rsl_rl_deploy_yaml(_SPRING_DEPLOY)
+    frame0 = np.arange(cfg.frame_dim, dtype=np.float32)
+    stacked0 = stack_rsl_rl_frame_major_history(frame0, [], cfg)
+    assert stacked0.shape == (470,)
+    np.testing.assert_allclose(stacked0[: cfg.frame_dim * 9], 0.0)
+    np.testing.assert_allclose(stacked0[cfg.frame_dim * 9 :], frame0)
+
+    frame1 = frame0 + 100.0
+    stacked1 = stack_rsl_rl_frame_major_history(frame1, [frame0], cfg)
+    np.testing.assert_allclose(stacked1[: cfg.frame_dim * 8], 0.0)
+    np.testing.assert_allclose(stacked1[cfg.frame_dim * 8 : cfg.frame_dim * 9], frame0)
+    np.testing.assert_allclose(stacked1[cfg.frame_dim * 9 :], frame1)
+
+
+def test_spring_jump_frame_uses_constants_and_joystick() -> None:
+    cfg = load_rsl_rl_deploy_yaml(_SPRING_DEPLOY)
+    frame = build_rsl_rl_observation(
+        config=cfg,
+        joint_pos=cfg.default_joint_pos,
+        joint_vel=np.zeros(12, dtype=np.float32),
+        base_ang_vel=np.array([0.4, -0.8, 1.2], dtype=np.float32),
+        projected_gravity=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        velocity_commands=np.array([0.0, 0.0, 0.0], dtype=np.float32),
+        last_action=np.zeros(12, dtype=np.float32),
+        euler_rpy=np.zeros(3, dtype=np.float32),
+        joystick_buttons=np.array([1.0], dtype=np.float32),
+    )
+    assert frame.shape == (47,)
+    np.testing.assert_allclose(frame[0:4], [0.0, 0.0, 0.7, 0.0])
+    np.testing.assert_allclose(frame[4:5], [1.0])
+    np.testing.assert_allclose(frame[5:8], [0.1, -0.2, 0.3])
+    np.testing.assert_allclose(frame[8:11], [0.0, 0.0, 0.0])
+    np.testing.assert_allclose(frame[11:23], 0.0)
+
+
+def _spring_zero_action_policy(tmp_path: Path) -> Any:
+    cfg = load_rsl_rl_deploy_yaml(_SPRING_DEPLOY)
+    skill_dir = tmp_path / "spring_skill"
+    skill_dir.mkdir()
+    (skill_dir / "params").mkdir()
+    (skill_dir / "params" / "deploy.yaml").write_text(
+        _SPRING_DEPLOY.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (skill_dir / "rskill.yaml").write_text(
+        _SPRING_MANIFEST.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    write_zero_action_onnx(
+        skill_dir / "policy.onnx",
+        observation_dim=cfg.observation_dim,
+        action_dim=cfg.action_dim,
+    )
+    env = SimpleNamespace(
+        vla=VLASpec(
+            id=RSL_RL_ONNX_FAMILY,
+            weights_uri=str(skill_dir),
+            device="cpu",
+            extra={"jump_trigger": 1.0},
+        ),
+        scene=SimpleNamespace(cameras=()),
+    )
+    return make_policy(env)  # type: ignore[arg-type]
+
+
+def test_spring_jump_make_policy_emits_12d(tmp_path: Path) -> None:
+    pytest.importorskip("onnx")
+    pytest.importorskip("onnxruntime")
+
+    cfg = load_rsl_rl_deploy_yaml(_SPRING_DEPLOY)
+    policy = _spring_zero_action_policy(tmp_path)
+    try:
+        policy.reset()
+        obs = {
+            "state": cfg.default_joint_pos,
+            "joint_vel": np.zeros(12, dtype=np.float32),
+            "base_twist": (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            "base_pose": {
+                "xyz": (0.0, 0.0, 0.4),
+                "quat_xyzw": (0.0, 0.0, 0.0, 1.0),
+            },
+        }
+        action = policy.step(obs, "hop")
+        assert action.shape == (12,)
+        np.testing.assert_allclose(action, cfg.default_joint_pos, atol=1e-5)
+        assert policy._joystick_buttons.tolist() == [1.0]
+        assert policy._config.history_layout == "frame_major"
+    finally:
+        policy.close()

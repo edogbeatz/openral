@@ -6,7 +6,7 @@ twin renders the cameras the manifest declares — without a per-robot scene
 composer or any ``scene_defaults.composition`` hook on the robot manifest.
 
 Each RGB ``SensorSpec`` that carries a
-``CameraSimPlacement`` is spliced as a ``<camera>`` either
+``CameraSimPlacement`` and ``sim_render=True`` is spliced as a ``<camera>`` either
 into its ``parent_body`` (a wrist camera that tracks the gripper) or into
 ``<worldbody>`` (a world-fixed overhead / third-person camera). The rig is
 **idempotent**: a camera already present in the MJCF (a scene-attached or
@@ -154,6 +154,7 @@ def rig_cameras_into_mjcf(xml: str, sensors: list[SensorSpec]) -> tuple[str, boo
         s
         for s in sensors
         if s.modality == "rgb"
+        and s.sim_render
         and s.sim_placement is not None
         and (s.sim_camera_name or s.name) not in existing
     ]

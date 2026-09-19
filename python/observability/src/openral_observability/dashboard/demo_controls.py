@@ -8,7 +8,9 @@ Neither story auto-walks. Apply dispatches the selected skill through
 ``POST /api/skill/execute``; the rsl-rl walk skill still uses
 :func:`walk_response` so the gentle forward jog stays the default.
 **Stop** cancels the in-flight ``ExecuteRskill`` goal (no e-stop latch)
-then snaps Hub stand so Apply can run again. **End Cricket** (see
+then snaps Hub stand so Apply can run again. Cancel-all is idempotent:
+nothing in flight (rclpy ``ERROR_REJECTED``) still stands — it must not
+paint OP_FAULT ``execute_rskill cancel failed``. **End Cricket** (see
 ``cricket_session``) tears the GPU session down; that is not Stop.
 """
 
@@ -106,13 +108,19 @@ def walk_skill_ids() -> list[str]:
 
 
 def is_walk_skill_id(skill_id: str) -> bool:
-    """True when ``skill_id`` is the Go2 rsl-rl velocity-flat walk skill."""
+    """True when ``skill_id`` is the Go2 rsl-rl velocity-flat walk skill.
+
+    Hop and arm_ready share the Go2 family token in the id; they are never
+    walk. Recalibrate ``preferWalk`` must not rewrite a hop pick.
+    """
     sid = skill_id.strip()
     if not sid:
         return False
+    compact = sid.lower().replace("-", "_")
+    if "hop" in compact or "jump" in compact or "arm_ready" in compact:
+        return False
     if sid in _WALK_SKILL_CANDIDATES:
         return True
-    compact = sid.lower().replace("-", "_")
     return "rsl_rl" in compact and "go2" in compact and "velocity" in compact
 
 
@@ -187,7 +195,12 @@ def _repo_root() -> Path:
 
 
 def _robot_id_from_env() -> str:
-    return os.environ.get("OPENRAL_ROBOT_ID", "").strip() or "go2_z1"
+    raw = os.environ.get("OPENRAL_ROBOT_ID", "").strip()
+    if raw:
+        return raw
+    from openral_observability.dashboard.cricket_session import cricket_live_robot_id
+
+    return cricket_live_robot_id() or "go2_z1"
 
 
 def _reset_service_for(robot_id: str) -> str:
@@ -208,9 +221,24 @@ _CANCEL_ALL_GOALS_YAML: Final[str] = (
     "goal_id: {uuid: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]}}}"
 )
 
-# ERROR_NONE (0) = canceled; ERROR_UNKNOWN_GOAL_ID (2) = nothing in flight
-# (idempotent Stop); ERROR_GOAL_TERMINATED (3) = already done.
-_CANCEL_OK_CODES: Final[frozenset[int]] = frozenset({0, 2, 3})
+# action_msgs CancelGoal. Demo Stop is cancel-all (zero UUID). Idempotent:
+# 0 ERROR_NONE — one or more goals entered CANCELING
+# 1 ERROR_REJECTED — no goal entered CANCELING (cancel-all with nothing
+#   cancelable, or cancel_cb REJECT / failed CANCELING transition)
+# 2 ERROR_UNKNOWN_GOAL_ID — specific id missing
+# 3 ERROR_GOAL_TERMINATED — already done
+# Treating 1 as OK is load-bearing: rclpy cancel-all with no cancelable
+# goal is REJECTED, not UNKNOWN_GOAL_ID. A strict {0,2,3} made Stop /
+# Apply-while-running paint OP_FAULT ``execute_rskill cancel failed``.
+_CANCEL_OK_CODES: Final[frozenset[int]] = frozenset({0, 1, 2, 3})
+_CANCEL_OK_NAMES: Final[frozenset[str]] = frozenset(
+    {
+        "ERROR_NONE",
+        "ERROR_REJECTED",
+        "ERROR_UNKNOWN_GOAL_ID",
+        "ERROR_GOAL_TERMINATED",
+    }
+)
 
 
 def _trigger_success(text: str) -> bool:
@@ -222,11 +250,15 @@ def _trigger_success(text: str) -> bool:
 
 
 def _cancel_goal_succeeded(text: str) -> bool:
-    """True when CancelGoal is NONE (0), UNKNOWN_GOAL_ID (2), or TERMINATED (3)."""
+    """True when CancelGoal returned a defined code (including idle REJECTED)."""
     match = re.search(r"return_code\s*[:=]\s*(-?\d+)", text)
-    if match is None:
-        return False
-    return int(match.group(1)) in _CANCEL_OK_CODES
+    if match is not None:
+        return int(match.group(1)) in _CANCEL_OK_CODES
+    named = re.search(r"return_code\s*[:=]\s*(ERROR_[A-Z_]+)", text)
+    if named is not None:
+        return named.group(1) in _CANCEL_OK_NAMES
+    compact = text.replace(" ", "")
+    return "goals_canceling" in compact
 
 
 async def _ros2_service_call(
@@ -236,29 +268,70 @@ async def _ros2_service_call(
     *,
     succeeded: Callable[[str], bool] | None = None,
 ) -> tuple[bool, str]:
-    """Shell ``ros2 service call``; return ``(ok, stdout_or_err)``."""
-    cmd = ["ros2", "service", "call", service, srv_type, args]
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            env=os.environ.copy(),
+    """Shell ``ros2 service call``; return ``(ok, stdout_or_err)``.
+
+    Laptop dashboards SSH the call into cricket. A down graph / SSH /
+    credits failure is :data:`CRICKET_DISCONNECTED_MSG` (or
+    ``start_error``), never a local PATH hint.
+    """
+    from openral_observability.dashboard.cricket_session import spawn_ros2
+
+    proc, err = await spawn_ros2(
+        ["service", "call", service, srv_type, args],
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    if err is not None or proc is None:
+        from openral_observability.dashboard.cricket_session import (
+            CRICKET_DISCONNECTED_MSG,
         )
+
+        return False, err or CRICKET_DISCONNECTED_MSG
+    try:
         raw, _ = await asyncio.wait_for(proc.communicate(), timeout=20.0)
     except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        from openral_observability.dashboard.cricket_session import (
+            CRICKET_DISCONNECTED_MSG,
+            on_cricket_host,
+        )
+
+        if not on_cricket_host():
+            return False, CRICKET_DISCONNECTED_MSG
         return False, f"timed out calling {service}"
-    except FileNotFoundError:
-        return False, "ros2 CLI not on PATH"
     text = raw.decode(errors="replace")
     checker = succeeded if succeeded is not None else _trigger_success
-    ok = proc.returncode == 0 and checker(text)
-    return ok, text
+    checked = checker(text)
+    # Custom checkers (CancelGoal return_code) are authoritative — Jazzy
+    # ``ros2 service call`` may exit 1 on ERROR_REJECTED even though the
+    # action server answered.
+    if succeeded is not None:
+        return checked, text
+    return proc.returncode == 0 and checked, text
+
+
+async def _graph_down_response() -> JSONResponse | None:
+    """503 once when cricket's graph is down — do not SSH ResetToPose."""
+    from openral_observability.dashboard.cricket_session import (
+        CRICKET_DISCONNECTED_MSG,
+        cricket_graph_running,
+    )
+
+    running = await asyncio.to_thread(cricket_graph_running)
+    if running:
+        return None
+    return JSONResponse(
+        {"error": CRICKET_DISCONNECTED_MSG, "robot_id": _robot_id_from_env()},
+        status_code=503,
+    )
 
 
 async def _reset_to_home_pose() -> tuple[str, JSONResponse | None]:
     """Snap Hub home. Returns ``(robot_id, error_or_None)``."""
     robot_id = _robot_id_from_env()
+    down = await _graph_down_response()
+    if down is not None:
+        return robot_id, down
     pose = _HOME_POSE_BY_ROBOT.get(robot_id)
     if pose is None:
         return robot_id, JSONResponse(
@@ -272,7 +345,13 @@ async def _reset_to_home_pose() -> tuple[str, JSONResponse | None]:
         f"{{pose: {pose_yaml}}}",
     )
     if not ok:
+        from openral_observability.dashboard.cricket_session import (
+            is_cricket_unavailable_message,
+        )
+
         _logger.warning("demo.reset_to_pose_failed robot=%s out=%s", robot_id, out[-500:])
+        if is_cricket_unavailable_message(out):
+            return robot_id, JSONResponse({"error": out, "robot_id": robot_id}, status_code=503)
         return robot_id, JSONResponse(
             {"error": "reset_to_pose failed", "detail": out[-800:], "robot_id": robot_id},
             status_code=502,
@@ -280,8 +359,15 @@ async def _reset_to_home_pose() -> tuple[str, JSONResponse | None]:
     return robot_id, None
 
 
-async def stand_response(*, origin: bool = True) -> JSONResponse:
-    """Clear e-stop and snap the twin upright at Hub home (joints + free base)."""
+async def stand_response(*, origin: bool = True, estop: Any = None) -> JSONResponse:
+    """Clear e-stop and snap the twin upright at Hub home (joints + free base).
+
+    ``estop`` is the dashboard's persistent ``EstopPublisher``. Recalibrate /
+    Stand must pass it so ``/openral/estop_cleared`` reaches the skill
+    runner — a shell-out ``ros2 topic pub`` can clear the HAL while the
+    runner stays latched and every Apply returns
+    ``action server rejected the goal``.
+    """
     del origin  # HAL always recentres today; kept for call-site clarity
     from openral_observability.dashboard.app import (
         _estop_reset_response,
@@ -294,7 +380,11 @@ async def stand_response(*, origin: bool = True) -> JSONResponse:
             status_code=403,
         )
 
-    estop_resp = await _estop_reset_response()
+    down = await _graph_down_response()
+    if down is not None:
+        return down
+
+    estop_resp = await _estop_reset_response(estop)
     # 200 or "no estop" still OK to proceed; only hard failures block.
     if estop_resp.status_code not in {200, 409}:
         body = json.loads(estop_resp.body.decode())
@@ -318,6 +408,9 @@ async def stop_response() -> JSONResponse:
     pair. The rSkill runner's ``cancel_cb`` drains (≤100 ms) and idle-holds;
     we then snap Hub home so a walk does not freeze mid-gait. The runner
     stays ``active``, so Apply can dispatch the next goal immediately.
+    Cancel-all with nothing cancelable is success (rclpy returns
+    ``ERROR_REJECTED``). A malformed cancel reply is non-fatal: Hub stand
+    still runs. Cricket-down is 503 before ResetToPose.
     """
     from openral_observability.dashboard.app import _write_controls_enabled
 
@@ -326,6 +419,10 @@ async def stop_response() -> JSONResponse:
             {"error": "write-controls disabled; set OPENRAL_DASHBOARD_WRITE_CONTROLS=1"},
             status_code=403,
         )
+
+    down = await _graph_down_response()
+    if down is not None:
+        return down
 
     from openral_observability.dashboard.cricket_session import mark_skills_idle
 
@@ -337,11 +434,13 @@ async def stop_response() -> JSONResponse:
         succeeded=_cancel_goal_succeeded,
     )
     if not cancel_ok:
-        _logger.warning("demo.stop_cancel_failed out=%s", cancel_out[-500:])
-        return JSONResponse(
-            {"error": "execute_rskill cancel failed", "detail": cancel_out[-800:]},
-            status_code=502,
+        from openral_observability.dashboard.cricket_session import (
+            is_cricket_unavailable_message,
         )
+
+        _logger.warning("demo.stop_cancel_nonfatal out=%s", cancel_out[-500:])
+        if is_cricket_unavailable_message(cancel_out):
+            return JSONResponse({"error": cancel_out}, status_code=503)
 
     if _CANCEL_THEN_STAND_S > 0.0:
         await asyncio.sleep(_CANCEL_THEN_STAND_S)
@@ -349,27 +448,34 @@ async def stop_response() -> JSONResponse:
     robot_id, err = await _reset_to_home_pose()
     if err is not None:
         return err
+    detail = (
+        "skill canceled; holding Hub stand — Apply to run again"
+        if cancel_ok
+        else "cancel did not confirm; holding Hub stand — Apply to run again"
+    )
     return JSONResponse(
         {
             "status": "ok",
             "accepted": True,
             "robot_id": robot_id,
             "action": "stop",
-            "canceled": True,
-            "detail": "skill canceled; holding Hub stand — Apply to run again",
+            "canceled": cancel_ok,
+            "detail": detail,
         },
         status_code=200,
     )
 
 
-async def walk_response(skill_id: str = "") -> JSONResponse:
-    """Dispatch the Go2 velocity walk skill with a gentle forward command.
+async def walk_response(
+    skill_id: str = "",
+    velocity_commands: list[float] | None = None,
+) -> JSONResponse:
+    """Dispatch the Go2 velocity walk skill with a joystick command.
 
-    Demo Apply uses this when the selected skill is the rsl-rl walk skill so
-    the operator gets ``velocity_commands: [0.35, 0, 0]`` without filling
-    param boxes. Other skills go through ``POST /api/skill/execute`` with
-    blank ``goal_params_json`` (manifest defaults). ``skill_id`` is the picker
-    value when it is a walk skill; candidates are fallbacks.
+    Demo Apply without a chat propose uses ``[0.35, 0, 0]``. Chat can pass
+    TypeSafe-shaped ``velocity_commands`` (forward / turn left / …).
+    ``skill_id`` is the picker value when it is a walk skill; candidates
+    are fallbacks.
     """
     from openral_observability.dashboard.app import (
         _skill_execute_response,
@@ -382,7 +488,8 @@ async def walk_response(skill_id: str = "") -> JSONResponse:
             status_code=403,
         )
 
-    goal = json.dumps({"velocity_commands": [0.35, 0.0, 0.0]})
+    joystick = velocity_commands if velocity_commands is not None else [0.35, 0.0, 0.0]
+    goal = json.dumps({"velocity_commands": joystick})
     last_err = "no skill id tried"
     for candidate in walk_skill_dispatch_ids(skill_id):
         result = await _skill_execute_response(
@@ -395,8 +502,15 @@ async def walk_response(skill_id: str = "") -> JSONResponse:
         if result.status_code < int(http.HTTPStatus.BAD_REQUEST):
             return result
         last_err = result.body.decode(errors="replace")
+    hint = ""
+    if "action server rejected the goal" in last_err:
+        hint = (
+            " — skill runner often still latched after End Cricket / e-stop; "
+            "POST /api/estop_reset (or Recalibrate with EstopPublisher) so "
+            "/openral/estop_cleared reaches the runner, then Apply again"
+        )
     return JSONResponse(
-        {"error": "walk dispatch failed", "detail": last_err[-500:]},
+        {"error": "walk dispatch failed", "detail": (last_err + hint)[-700:]},
         status_code=502,
     )
 
@@ -482,6 +596,8 @@ export PYOPENGL_PLATFORM=egl
 export OPENRAL_CRICKET_INSTANCE="${{OPENRAL_CRICKET_INSTANCE:-abundant-turquoise-cricket}}"
 export OPENRAL_CRICKET_CONTAINER="${{OPENRAL_CRICKET_CONTAINER:-openral-jazzy-go2}}"
 export OPENRAL_CRICKET_HALT_HOST="${{OPENRAL_CRICKET_HALT_HOST:-1}}"
+export OPENRAL_CRICKET_ROLE=host
+export OPENRAL_CRICKET_IDLE_S="${{OPENRAL_CRICKET_IDLE_S:-0}}"
 : > /tmp/openral_demo_deploy.log
 echo "relaunching preset={preset_q} scene={scene_q} robot={robot_q}" >> /tmp/openral_demo_deploy.log
 nohup setsid xvfb-run -a env MUJOCO_GL=egl PYOPENGL_PLATFORM=egl \\
@@ -490,6 +606,8 @@ nohup setsid xvfb-run -a env MUJOCO_GL=egl PYOPENGL_PLATFORM=egl \\
   OPENRAL_CRICKET_INSTANCE="$OPENRAL_CRICKET_INSTANCE" \\
   OPENRAL_CRICKET_CONTAINER="$OPENRAL_CRICKET_CONTAINER" \\
   OPENRAL_CRICKET_HALT_HOST="$OPENRAL_CRICKET_HALT_HOST" \\
+  OPENRAL_CRICKET_ROLE=host \\
+  OPENRAL_CRICKET_IDLE_S="$OPENRAL_CRICKET_IDLE_S" \\
   {bin_q} deploy sim --config {scene_q} --dashboard --foxglove \\
   >> /tmp/openral_demo_deploy.log 2>&1 &
 echo relaunched_pid=$! preset={preset_q} >> /tmp/openral_demo_deploy.log
@@ -497,7 +615,19 @@ echo relaunched_pid=$! preset={preset_q} >> /tmp/openral_demo_deploy.log
 
 
 def _spawn_scene_reload(preset_id: str) -> tuple[bool, str]:
-    """Detach a bash job that kills deploy sim and relaunches ``preset_id``."""
+    """Detach a bash job that kills deploy sim and relaunches ``preset_id``.
+
+    On a laptop this SSHes the same script into the cricket container —
+    local ``Popen`` would start a Mac graph and leave the live twin unchanged.
+    """
+    from openral_observability.dashboard.cricket_session import on_cricket_host
+
+    if not on_cricket_host():
+        from openral_observability.dashboard.cricket_session import (
+            spawn_remote_scene_reload,
+        )
+
+        return spawn_remote_scene_reload(preset_id)
     meta = DEMO_PRESETS.get(preset_id)
     if meta is None:
         return False, f"unknown preset {preset_id!r}"

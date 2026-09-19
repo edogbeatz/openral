@@ -64,6 +64,9 @@ from openral_core import (
 from openral_hal.go2 import (
     GO2_DESCRIPTION,
     GO2_HOME_JOINT_TARGETS,
+    GO2_HOP_JOINT_TARGETS,
+    GO2_HOP_PD_KP,
+    GO2_HOP_PD_KV,
     GO2_HUB_DEFAULT_JOINT_POS,
     Go2MujocoHAL,
 )
@@ -130,9 +133,11 @@ class TestGo2Description:
         assert desc.sim.floating_base is True
         assert desc.assets.mjcf == "rd:go2_mj_description"
         assert desc.sensors[0].name == "front"
+        assert desc.sensors[0].sim_render is False
         assert desc.sensors[0].sim_placement is not None
         assert desc.sensors[0].sim_placement.parent_body == "base"
         assert desc.sensors[1].name == "top"
+        assert desc.sensors[1].sim_render is True
         assert desc.sensors[1].vla_feature_key is None
         assert desc.sensors[1].sim_placement is not None
         assert desc.sensors[1].sim_placement.parent_body == "base"
@@ -215,6 +220,19 @@ def hal() -> Go2MujocoHAL:
     return Go2MujocoHAL(gravity_enabled=False, settle_steps=3000)
 
 
+def _foot_bottoms(hal: Go2MujocoHAL) -> list[float]:
+    """World-z of each menagerie foot-sphere bottom (FL, FR, RL, RR)."""
+    model = hal._model
+    data = hal._data
+    assert model is not None and data is not None
+    bottoms: list[float] = []
+    for name in ("FL", "FR", "RL", "RR"):
+        geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name)
+        assert geom_id >= 0, name
+        bottoms.append(float(data.geom_xpos[geom_id][2] - model.geom_size[geom_id][0]))
+    return bottoms
+
+
 def _home_action(overrides: dict[int, float] | None = None) -> Action:
     targets = list(GO2_HOME_JOINT_TARGETS)
     if overrides:
@@ -290,6 +308,48 @@ class TestReadState:
         for name, q, home in zip(state.name, state.position, GO2_HOME_JOINT_TARGETS, strict=True):
             assert abs(q - home) < 5e-2, f"{name} after reset+idle {q:.4f} (home {home})"
 
+    def test_hop_stand_sits_feet_on_the_ground_and_keeps_walk_pd(self) -> None:
+        """Apply hop used to pin Hub z under longer legs — feet 5 cm underground.
+
+        ResetToPose must drop the free base onto the foot spheres and keep
+        walk PD. Isaac hop ``kp=20`` sags the calves on these torque motors.
+        """
+        from openral_sim.scene_composers import compose_ground_plane_mjcf
+
+        xml, meshdir = compose_ground_plane_mjcf(mjcf_ref="rd:go2_mj_description")
+        path = meshdir.parent / "go2_hop_stand_test.xml"
+        path.write_text(xml)
+        hal = Go2MujocoHAL(
+            mjcf_path=str(path),
+            gravity_enabled=True,
+            settle_steps=1,
+            staleness_limit_s=1e9,
+        )
+        hal.connect()
+        try:
+            walk_kp = next(iter(hal._pd_gains.values()))[0]
+            assert walk_kp != pytest.approx(GO2_HOP_PD_KP)
+            hub_feet = _foot_bottoms(hal)
+            assert min(hub_feet) == pytest.approx(0.0, abs=2e-3)
+
+            hal.reset_to_pose(list(GO2_HOP_JOINT_TARGETS))
+            hop_feet = _foot_bottoms(hal)
+            assert min(hop_feet) == pytest.approx(0.0, abs=2e-3), (
+                f"hop ResetToPose buried the feet at {min(hop_feet):.4f} m"
+            )
+            hop_z = hal.base_pose_6dof()[0][2]
+            assert hop_z > 0.30, f"hop stand still at Hub height z={hop_z:.3f}"
+            for name, (kp, kv) in hal._pd_gains.items():
+                assert kp != pytest.approx(GO2_HOP_PD_KP), name
+                assert kv != pytest.approx(GO2_HOP_PD_KV), name
+
+            hal.reset_to_pose(list(GO2_HOME_JOINT_TARGETS))
+            restored = next(iter(hal._pd_gains.values()))[0]
+            assert restored == pytest.approx(walk_kp)
+            assert min(_foot_bottoms(hal)) == pytest.approx(0.0, abs=2e-3)
+        finally:
+            hal.disconnect()
+
 
 class TestSendAction:
     def test_rejects_wrong_joint_count(self, connected_hal: Go2MujocoHAL) -> None:
@@ -324,23 +384,16 @@ class TestClosedLoopMujoco:
 
 
 class TestFrontCamera:
-    """Spliced front RGB must render a readable scene, not a flat gray slab."""
+    """Snout RGB stays in the manifest for VLA matching but is not EGL-rendered."""
 
-    def test_front_frame_has_textured_ground(self, connected_hal: Go2MujocoHAL) -> None:
-        import numpy as np
-
+    def test_front_is_not_rendered(self, connected_hal: Go2MujocoHAL) -> None:
         frames = connected_hal.read_images()
-        assert "front" in frames
-        img = np.asarray(frames["front"])
-        assert img.shape == (480, 640, 3)
-        # The old camrig floor was a finite flat-gray patch under a black void.
-        # Foxglove's Image panel swallowed the void and the remaining slab
-        # looked like a zoomed-in close-up. Checker + skybox must produce
-        # spatial variation on the ground and a non-black sky.
-        top = img[: img.shape[0] // 2]
-        bot = img[img.shape[0] // 2 :].mean(axis=2)
-        assert float(bot.max() - bot.min()) > 40.0  # light vs dark tiles
-        assert float(top.mean()) > 20.0  # skybox, not void that Foxglove swallows
+        assert "front" not in frames
+        assert "top" in frames
+
+
+class TestTopCamera:
+    """Third-person ``top`` is the live twin camera."""
 
     def test_top_frame_shows_the_robot(self, connected_hal: Go2MujocoHAL) -> None:
         import numpy as np

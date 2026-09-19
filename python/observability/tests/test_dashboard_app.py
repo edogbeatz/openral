@@ -14,6 +14,7 @@ import json
 import os
 import stat
 import sys
+import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -28,7 +29,12 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
     ExportTraceServiceRequest,
     ExportTraceServiceResponse,
 )
-from opentelemetry.proto.common.v1.common_pb2 import AnyValue, InstrumentationScope, KeyValue
+from opentelemetry.proto.common.v1.common_pb2 import (
+    AnyValue,
+    ArrayValue,
+    InstrumentationScope,
+    KeyValue,
+)
 from opentelemetry.proto.logs.v1.logs_pb2 import (
     LogRecord,
     ResourceLogs,
@@ -40,6 +46,7 @@ from opentelemetry.proto.trace.v1.trace_pb2 import (
     ResourceSpans,
     ScopeSpans,
     Span,
+    Status,
 )
 
 
@@ -196,28 +203,107 @@ async def test_post_traces_malformed_returns_400() -> None:
 
 
 @pytest.mark.asyncio
-async def test_index_serves_html() -> None:
+async def test_index_redirects_to_simple() -> None:
+    """GET / does not start the classic root UI; it sends you to /simple."""
     app = create_app(TelemetryStore())
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/")
+        resp = await client.get("/", follow_redirects=False)
+        assert resp.status_code == 307
+        assert resp.headers["location"] == "/simple"
+        simple = await client.get("/simple")
+        assert simple.status_code == 200
+        assert "OpenRAL · Simple".encode() in simple.content
+        assert "OpenRAL · Live Dashboard".encode() not in simple.content
+        assert b'id="demo-cricket-start"' not in simple.content
+
+
+@pytest.mark.asyncio
+async def test_simple_serves_html() -> None:
+    """GET /simple is the only operator UI."""
+    app = create_app(TelemetryStore())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/simple")
         assert resp.status_code == 200
-        assert "OpenRAL · Live Dashboard".encode() in resp.content
-        assert "<title>OpenRAL · Live Dashboard</title>".encode() in resp.content
-        assert b'id="cell-cameras" hidden' not in resp.content
-        assert b'data-camera="front"' in resp.content
-        assert b'data-camera="top"' in resp.content
-        assert b"waiting for camera" in resp.content
-        # Stream URL is set in HTML; is-streaming drops the opaque placeholder
-        # even when multipart MJPEG never fires img.onload.
-        assert b'class="camera is-streaming"' in resp.content
-        assert b'src="/api/camera/front/stream"' in resp.content
-        assert b'src="/api/camera/top/stream"' in resp.content
-        assert b"dashboard.js?v=walk1" in resp.content
-        assert "Main · front".encode() in resp.content
-        assert "Side · top".encode() in resp.content
-        assert b"Add Robot" not in resp.content
-        assert b"Write-controls enabled" not in resp.content
+        assert "OpenRAL · Simple".encode() in resp.content
+        assert "<title>OpenRAL · Simple</title>".encode() in resp.content
+        assert b"/static/simple-ui/_next/" in resp.content
+        assert b'data-slot="button"' in resp.content
+        assert b"Start engine" in resp.content
+        assert b"GO2 CHAT" in resp.content
+        assert b"Ask for a walk or hop" in resp.content
+        assert b"Operator dashboard" not in resp.content
+        assert b"dashboard.js" not in resp.content
+        assert b"simple.js" not in resp.content
+        assert b"/static/simple-ui/assets/" not in resp.content
+
+
+def test_simple_chat_bar_uses_json_render() -> None:
+    """GET /simple has a right Go2 chat sidebar with json-render."""
+    ui_root = Path(__file__).resolve().parents[1] / "simple_ui"
+    pkg = (ui_root / "package.json").read_text(encoding="utf-8")
+    app = (ui_root / "components" / "simple-play.tsx").read_text(encoding="utf-8")
+    bar = (ui_root / "components" / "go2-chat-bar.tsx").read_text(encoding="utf-8")
+    catalog = (ui_root / "lib" / "chat-catalog.ts").read_text(encoding="utf-8")
+    registry = (ui_root / "lib" / "chat-registry.tsx").read_text(encoding="utf-8")
+
+    assert '"@json-render/react"' in pkg
+    assert '"@json-render/core"' in pkg
+    assert '"streamdown"' in pkg
+    assert "from '@/components/go2-chat-bar'" in app
+    assert "<Go2ChatBar />" in app
+    assert "lg:flex-row" in app
+    assert app.find("<main") < app.find("<Go2ChatBar")
+    assert 'id="go2-chat"' in bar
+    assert 'id="go2-chat-input"' in bar
+    assert 'id="go2-chat-send"' in bar
+    assert "<aside" in bar
+    assert "lg:w-80" in bar
+    assert "lg:border-l" in bar
+    assert "sticky bottom-0" not in bar
+    assert "useChatUI" in bar
+    assert "function chatApi()" in bar
+    assert "`${window.location.origin}/api/chat`" in bar
+    assert "from 'streamdown'" in bar
+    assert "from '@json-render/react'" in bar
+    assert "isAnimating=" in bar
+    assert 'caret="block"' in bar
+    assert "TextShimmer" in bar
+    assert 'id="go2-chat-pulling"' in bar
+    assert "pulling" in bar
+    assert "waitingOnPull" in bar
+    assert "StatusCard" in catalog
+    assert "propose" in catalog
+    assert "hydrateAcquirePropose" in bar
+    assert "Ask for a walk or hop" in bar
+    assert "UNIT_CHANGED_LINE" in bar
+    assert "subscribeUnitChanged" in bar
+    assert "FELL_LINE" in bar
+    assert "subscribeFallen" in bar
+    assert "withUnitNotices" in bar
+    assert "defineRegistry" in registry
+    assert "go2ChatRegistry" in registry
+    assert "action: z.enum(['apply', 'adapt', 'stop'])" in catalog
+    assert 'id={id}' in registry
+    assert 'id = isAdapt ? \'chat-adapt\' : \'chat-apply\'' in registry
+    assert "await onApply()" in registry
+    assert "await onStop()" in registry
+    assert "chatApplyPhase" in registry
+    assert "APPLYING…" in registry
+    assert "STANDING…" in registry
+    assert "STOPPING…" in registry
+    assert "subscribePlay" in registry
+    assert "void onApply()" in registry
+    assert "void onStop()" in registry
+    shimmer = (ui_root / "components" / "ui" / "text-shimmer.tsx").read_text(
+        encoding="utf-8"
+    )
+    css = (ui_root / "app" / "globals.css").read_text(encoding="utf-8")
+    assert "export function TextShimmer" in shimmer
+    assert "text-shimmer" in shimmer
+    assert "@keyframes text-shimmer" in css
+    assert "prefers-reduced-motion" in css
 
 
 @pytest.mark.asyncio
@@ -323,12 +409,47 @@ def test_cancel_goal_succeeded_parses_return_code() -> None:
 
     assert _cancel_goal_succeeded("response:\n  return_code: 0\n") is True
     assert _cancel_goal_succeeded("return_code=3") is True  # already terminated
-    assert _cancel_goal_succeeded("return_code: 2") is True  # nothing in flight
-    assert _cancel_goal_succeeded("return_code: 1") is False  # rejected
+    assert _cancel_goal_succeeded("return_code: 2") is True  # specific id missing
+    assert _cancel_goal_succeeded("return_code: 1") is True  # cancel-all, nothing cancelable
+    assert _cancel_goal_succeeded("return_code: ERROR_REJECTED") is True
+    assert _cancel_goal_succeeded("return_code=ERROR_NONE") is True
+    assert _cancel_goal_succeeded("goals_canceling: []") is True
     assert _cancel_goal_succeeded("no return code here") is False
     assert _trigger_success("response:\n  success: True\n") is True
     assert _trigger_success("success=True") is True
     assert _trigger_success("success: false") is False
+
+
+@pytest.mark.asyncio
+async def test_ros2_cancel_call_ignores_cli_exit_on_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Jazzy ``ros2 service call`` may exit 1 on ERROR_REJECTED; checker wins."""
+    from openral_observability.dashboard.demo_controls import (
+        _cancel_goal_succeeded,
+        _ros2_service_call,
+    )
+
+    shim = tmp_path / "ros2"
+    shim.write_text(
+        "#!"
+        + sys.executable
+        + "\n"
+        + "print('response:')\n"
+        + "print('  return_code: 1')\n"
+        + "raise SystemExit(1)\n"
+    )
+    shim.chmod(shim.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("OPENRAL_CRICKET_ROLE", "host")
+    ok, out = await _ros2_service_call(
+        "/openral/execute_rskill/_action/cancel_goal",
+        "action_msgs/srv/CancelGoal",
+        "{goal_info: {}}",
+        succeeded=_cancel_goal_succeeded,
+    )
+    assert ok is True
+    assert "return_code: 1" in out
 
 
 @pytest.fixture
@@ -358,6 +479,7 @@ def ros2_demo_stop_shim(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iter
     )
     shim.chmod(shim.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("OPENRAL_CRICKET_ROLE", "host")
     yield log
 
 
@@ -366,11 +488,13 @@ async def test_demo_stop_cancels_then_stands(
     monkeypatch: pytest.MonkeyPatch, ros2_demo_stop_shim: Path
 ) -> None:
     """Stop cancels ExecuteRskill (no e-stop) then snaps Hub home so Apply can re-run."""
+    from openral_observability.dashboard import cricket_session as cs
     from openral_observability.dashboard import demo_controls
 
     monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
     monkeypatch.setenv("OPENRAL_ROBOT_ID", "go2")
     monkeypatch.setattr(demo_controls, "_CANCEL_THEN_STAND_S", 0.0)
+    monkeypatch.setattr(cs, "cricket_graph_running", lambda: True)
     app = create_app(TelemetryStore())
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
@@ -391,6 +515,114 @@ async def test_demo_stop_cancels_then_stands(
     assert "ResetToPose" in joined[1]
     assert "/openral/go2/reset_to_pose" in joined[1]
     assert all("estop" not in " ".join(args).lower() for args in lines)
+
+
+@pytest.mark.asyncio
+async def test_demo_stop_rejected_cancel_still_stands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancel-all with nothing cancelable is ERROR_REJECTED — Stop still Hub-stands."""
+    from openral_observability.dashboard import cricket_session as cs
+    from openral_observability.dashboard import demo_controls
+
+    calls: list[str] = []
+
+    async def _fake_call(
+        service: str,
+        srv_type: str,
+        args: str,
+        *,
+        succeeded: object | None = None,
+    ) -> tuple[bool, str]:
+        del srv_type, args
+        calls.append(service)
+        if "cancel_goal" in service:
+            text = "response:\n  return_code: 1\n  goals_canceling: []\n"
+            check = succeeded if callable(succeeded) else None
+            ok = bool(check(text)) if check is not None else False
+            return ok, text
+        return True, "success=True"
+
+    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
+    monkeypatch.setenv("OPENRAL_ROBOT_ID", "go2")
+    monkeypatch.setattr(demo_controls, "_CANCEL_THEN_STAND_S", 0.0)
+    monkeypatch.setattr(cs, "cricket_graph_running", lambda: True)
+    monkeypatch.setattr(demo_controls, "_ros2_service_call", _fake_call)
+    app = create_app(TelemetryStore())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.post("/api/demo/stop")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["accepted"] is True
+    assert body["canceled"] is True
+    assert body["action"] == "stop"
+    assert any("cancel_goal" in item for item in calls)
+    assert any("reset_to_pose" in item for item in calls)
+
+
+@pytest.mark.asyncio
+async def test_demo_stop_unparsed_cancel_still_stands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A broken CancelGoal dump must not OP_FAULT — Hub stand still runs."""
+    from openral_observability.dashboard import cricket_session as cs
+    from openral_observability.dashboard import demo_controls
+
+    async def _fake_call(
+        service: str,
+        srv_type: str,
+        args: str,
+        *,
+        succeeded: object | None = None,
+    ) -> tuple[bool, str]:
+        del srv_type, args, succeeded
+        if "cancel_goal" in service:
+            return False, "Failed to populate message from YAML"
+        return True, "success=True"
+
+    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
+    monkeypatch.setenv("OPENRAL_ROBOT_ID", "go2")
+    monkeypatch.setattr(demo_controls, "_CANCEL_THEN_STAND_S", 0.0)
+    monkeypatch.setattr(cs, "cricket_graph_running", lambda: True)
+    monkeypatch.setattr(demo_controls, "_ros2_service_call", _fake_call)
+    app = create_app(TelemetryStore())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.post("/api/demo/stop")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["accepted"] is True
+    assert body["canceled"] is False
+    assert "did not confirm" in body["detail"]
+
+
+@pytest.mark.asyncio
+async def test_laptop_stop_graph_down_is_disconnected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dead graph: Stop 503s once and must not SSH CancelGoal or ResetToPose."""
+    from openral_observability.dashboard import cricket_session as cs
+    from openral_observability.dashboard import demo_controls
+
+    calls: list[str] = []
+
+    async def _boom(*args: object, **kwargs: object) -> tuple[bool, str]:
+        calls.append(str(args[0]) if args else "call")
+        return False, "should not run"
+
+    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
+    monkeypatch.setenv("OPENRAL_CRICKET_ROLE", "laptop")
+    monkeypatch.setattr(cs, "cricket_graph_running", lambda: False)
+    monkeypatch.setattr(cs, "get_watch", lambda: None)
+    monkeypatch.setattr(demo_controls, "_ros2_service_call", _boom)
+    app = create_app(TelemetryStore())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.post("/api/demo/stop")
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["error"] == "cricket is disconnected"
+    assert calls == []
 
 
 @pytest.mark.asyncio
@@ -594,6 +826,8 @@ def test_demo_reload_script_does_not_pkill_self() -> None:
     assert "ulimit -c 0" in script
     assert "OPENRAL_CRICKET_INSTANCE" in script
     assert "OPENRAL_CRICKET_HALT_HOST" in script
+    assert "OPENRAL_CRICKET_ROLE=host" in script
+    assert "OPENRAL_CRICKET_IDLE_S" in script
 
 
 def test_spawn_scene_reload_execs_script_file(
@@ -633,15 +867,18 @@ def test_spawn_scene_reload_execs_script_file(
 
 
 def test_dashboard_js_reload_poll_requires_healthz_gap() -> None:
-    """Poll must wait for healthz to drop, then allow up to 180s."""
+    """Laptop /healthz never drops; poll waits for /api/config robot_id."""
     js = (
         Path(__file__).resolve().parents[1]
         / "src/openral_observability/dashboard/static/dashboard.js"
     )
     text = js.read_text(encoding="utf-8")
-    assert "sawDown" in text
-    assert "DEMO_RELOAD_MAX_TRIES = 90" in text
-    assert "tries > 45" not in text
+    load_fn = text[text.find("function wireDemoLoad") : text.find('wireDemoLoad("demo-go2")')]
+    assert "sawGap" in load_fn
+    assert "/api/config" in load_fn
+    assert 'fetch("/healthz"' not in load_fn
+    assert "DEMO_RELOAD_MAX_TRIES = 90" in load_fn
+    assert "tries > 45" not in load_fn
 
 
 def test_dashboard_js_bare_go2_auto_stands_armed_asks_recalibrate() -> None:
@@ -667,16 +904,443 @@ def test_dashboard_js_bare_go2_auto_stands_armed_asks_recalibrate() -> None:
     assert "foxglove_open_url" in text
     assert 'data.role === "laptop"' in text
     assert "ws://localhost:8765" in text
-    assert "savedIsWalk" in text
-    assert "if (preferWalk && walkId) selectEl.value = walkId;" in text
+    assert "savedIsWalk" not in text
+    assert "isArmReadySkillId" in text
+    assert "if (preferWalk && walkId && (!keep || isArmReadySkillId(keep))) selectEl.value = walkId;" in text
     assert 'demoPost("/api/demo/walk", { skill_id: skillId })' in text
+    assert "switching skill — stopping the current one" in text
+    assert 'rid === "go2" || rid === "go2_z1"' in text
+    assert "sessionStorage.setItem(DEMO_ROBOT_KEY, rid)" in text
+    assert 'if (rid && !demoRobot())' not in text
+    assert "1 · Load the unit" in text
+    assert "Nothing is loaded. Pick Bare Go2 or Go2 + Z1" in text
+
+
+def test_simple_js_engine_robot_calibrate_then_apply() -> None:
+    """Simple page: engine → UNIT + skill dropdowns; Apply lives in chat.
+
+    Header primary is Start / Load / Stop only. Load auto-stands so
+    Apply is ready. Footer RESET is ``POST /api/demo/recalibrate``.
+    Chat Apply stands first only if the dog is not already stood.
+    Never auto-walk. Abort is Hub stand, not End Cricket.
+    """
+    ui_root = Path(__file__).resolve().parents[1] / "simple_ui"
+    pkg = (ui_root / "package.json").read_text(encoding="utf-8")
+    components = (ui_root / "components.json").read_text(encoding="utf-8")
+    js = (ui_root / "lib" / "play.ts").read_text(encoding="utf-8")
+    app = (ui_root / "components" / "simple-play.tsx").read_text(encoding="utf-8")
+    tile = (ui_root / "components" / "camera-tile.tsx").read_text(encoding="utf-8")
+    css = (ui_root / "app" / "globals.css").read_text(encoding="utf-8")
+    button = (ui_root / "components" / "ui" / "button.tsx").read_text(encoding="utf-8")
+    select = (ui_root / "components" / "ui" / "select.tsx").read_text(encoding="utf-8")
+    layout = (ui_root / "app" / "layout.tsx").read_text(encoding="utf-8")
+    go2 = ui_root / "public" / "robots" / "go2.svg"
+    z1 = ui_root / "public" / "robots" / "go2-z1.svg"
+
+    assert '"next": "16.3.3"' in pkg
+    assert '"react": "19.2.6"' in pkg
+    assert '"geist"' in pkg
+    assert '"tw-animate-css"' in pkg
+    assert '"@tailwindcss/postcss"' in pkg
+    assert '"vite"' not in pkg
+    assert '"style": "new-york"' in components
+    assert '"rsc": true' in components
+    assert "geist/font/sans" in layout
+    assert "@import 'tw-animate-css'" in css
+    assert go2.is_file()
+    assert z1.is_file()
+
+    assert "/api/demo/cricket/start" in js
+    assert "Start engine" in app
+    assert "Starting…" in app
+    assert "Loader2" in app
+    assert "animate-spin" in app
+    assert "Operator dashboard" not in app
+    assert "id: 'go2'" in js
+    assert "id: 'go2_z1'" in js
+    assert "/static/simple-ui/robots/go2.svg" in js
+    assert "/static/simple-ui/robots/go2-z1.svg" in js
+    assert 'loadPreset' not in js
+    assert 'demoPost("/api/demo/load"' in js or "demoPost('/api/demo/load'" in js
+    assert "{ preset }" in js or "{ preset: preset }" in js
+    assert "/api/demo/recalibrate" in js
+    assert "RECAL_WAITS_MS" not in js
+    cal_fn = js[js.find("async function calibrate()") : js.find("async function applySkill")]
+    assert cal_fn.count("demoPost('/api/demo/recalibrate')") == 1
+    assert "for (const waitMs" not in cal_fn
+    assert "RESETTING…" in app
+    assert "STANDING…" not in app
+    assert "Stopping…" in app
+    assert "ctaBusy" in app
+    assert "/api/demo/walk" in js
+    assert "/api/demo/stop" in js
+    assert "Never auto-walk" in js
+    assert "WALK_MS" not in js
+    assert "await walkThenStop()" not in js
+
+    assert "primaryAction" in js
+    assert "step === 'calibrate'" in js
+    assert "step === 'apply'" in js
+    assert "return 'calibrate'" not in js
+    assert "return 'stop'" in js
+    assert "id=\"reset\"" in app
+    assert "id=\"stand\"" not in app
+    assert "RESET" in app
+    assert "STAND" not in app
+    assert "calibrate: 'Calibrate'" not in app
+    assert "apply: 'Apply'" not in app
+    save_cal = js.find("savePlay('calibrate'")
+    save_apply = js.find("savePlay('apply'")
+    assert save_cal != -1 and save_apply != -1
+
+    assert "is-streaming" in tile
+    assert 'src="/api/camera/top/stream"' in app
+    assert 'src="/api/camera/front/stream"' not in app
+    assert "img.onload" not in js
+    assert "img.onload" not in app
+    assert ".camera.has-mjpeg .camera-placeholder" in css
+    assert ".camera:has(img[src]):not(.has-no-signal) .camera-placeholder" in css
+    assert ".camera:has(canvas.camera-stream)" not in css
+    assert "from '@/components/ui/button'" in app
+    assert "from '@/components/ui/badge'" in app
+    assert "from '@/components/ui/select'" in app
+    assert 'data-slot="button"' in button
+    assert 'data-slot="select"' in select
+    assert 'id="unit-select"' in app
+    assert 'id="skill-select"' in app
+    assert "Acquire/rskill-rsl-rl-onnx-go2-velocity-flat" in js
+    assert "OpenRAL/rskill-rsl_rl_onnx-go2-spring_jump-fp32" in js
+    assert "OpenRAL/rskill-zero-go2_z1-arm_ready-fp32" in js
+    assert "label: 'move'" in js
+    assert "label: 'hop'" in js
+    assert "label: 'arm'" in js
+    assert "export function skillsForRobot" in js
+    assert "export function clampSkillForRobot" in js
+    assert "export function copyFor" in js
+    assert "export function isHopSkillId" in js
+    assert "export function isArmReadySkillId" in js
+    assert "if (!robot || !offered) return []" in js
+    assert "export const DEFAULT_SKILL: SkillId = ''" in js
+    assert "export function applyAcquirePropose" in js
+    assert "export async function hydrateAcquirePropose" in js
+    assert "export function subscribePlay" in js
+    assert "export function chatApplyPhase" in js
+    assert "export async function onStop" in js
+    assert "embodimentTags: ['go2_z1']" in js
+    assert "offeredSkills" in app
+    assert "skillsForRobot(robot, skill)" in app
+    assert "no skill yet — ask chat" in app
+    assert "copyFor(step, skill, robot)" in app
+    assert "export function chooseSkill" in js
+    assert "export function isWalkSkillId" in js
+    apply_fn = js[js.find("async function applySkill") : js.find("async function watchSkill")]
+    assert "velocity_commands" in apply_fn
+    assert "demoPost('/api/demo/walk', walkBody)" in apply_fn
+    assert "'/api/skill/execute'" in apply_fn
+    assert "goal_params_json" in apply_fn
+    assert "await applyWalk()" not in js
+
+    abort_at = js.find("async function stopSkill")
+    assert abort_at != -1
+    abort_fn = js[abort_at : abort_at + 900]
+    assert "/api/demo/stop" in abort_fn
+    assert "data.accepted" in abort_fn
+    assert "/api/demo/cricket/end" not in js
+    assert "PLAY_KEY = 'openral.simple.play'" in js
+    assert "skill: sid" in js
+    assert "function persistPlay" in js
+    assert "export function reconcileRestoredPlay" in js
+    assert "skillRunning" in js
+    assert "graphRunning" in js
+    assert "play.step === 'running' ? 'apply'" not in js
+    assert "paint(play.step," not in js
+    assert "function fail(" in js
+    assert "export function messageFromBody" in js
+    assert "export function unreachableMessage" in js
+    assert "WRITE_CONTROLS_MSG" in js
+    assert "UNREACHABLE_MSG" in js
+    assert "write-controls disabled; set OPENRAL_DASHBOARD_WRITE_CONTROLS=1" in js
+    assert "can't reach the dashboard" in js
+    assert "export async function onCalibrate" in js
+    assert "export async function onApply" in js
+    assert "export async function onStop" in js
+    assert "export function canCalibrate" in js
+    assert "export function canApply" in js
+    assert 'id="primary"' in app
+    assert 'id="reset"' in app
+    assert 'id="stand"' not in app
+    assert 'id="calibrate"' not in app
+    assert 'id="apply"' not in app
+    assert "PRIMARY_LABEL" in app
+    assert "headerAction" in app
+    assert "stop: 'Stop'" in app
+    assert "const needsStand = snapshot.step !== 'apply'" in js
+    assert "await calibrate()" in js[js.find("export async function onApply") :]
+    reload_fn = js[
+        js.find("async function reloadAfterLoad") : js.find("function startErrorFrom")
+    ]
+    finish_fn = js[
+        js.find("async function finishLoad") : js.find("export async function onCalibrate")
+    ]
+    assert "await calibrate()" in reload_fn
+    assert "await calibrate()" in finish_fn
+    assert "Stand if tipped" not in js
+    assert "Reset if tipped" in js
+    assert "fail(recoverStep(action)" not in js
+    assert "fail('choose'" in js
+    assert "fail('running'" in js
+    assert "savePlay('error'" not in js
+    assert 'data-slot="alert"' in (ui_root / "components" / "ui" / "alert.tsx").read_text(
+        encoding="utf-8"
+    )
+    assert "from '@/components/ui/alert'" in app
+    assert 'variant="destructive"' in app
+
+
+def test_simple_unit_label_follows_live_occupant() -> None:
+    """Empty /simple says Load the unit; UNIT follows cricket identity, not Bare Go2."""
+    ui_root = Path(__file__).resolve().parents[1] / "simple_ui"
+    js = (ui_root / "lib" / "play.ts").read_text(encoding="utf-8")
+    app = (ui_root / "components" / "simple-play.tsx").read_text(encoding="utf-8")
+    html = (
+        Path(__file__).resolve().parents[1]
+        / "src/openral_observability/dashboard/static/index.html"
+    ).read_text(encoding="utf-8")
+
+    assert "export function occupantRobot" in js
+    assert "export function robotLabel" in js
+    assert "export function parseRobotId" in js
+    assert "export const UNIT_CHANGED_LINE = 'unit changed.'" in js
+    assert "export const FELL_LINE =" in js
+    assert "this skill needs retraining or finetuning" in js
+    assert "export function shouldAnnounceUnitChange" in js
+    assert "return Boolean(from && to && from !== to)" in js
+    assert "noteUnitChanged(liveId || snapshot.robot, preset)" in js
+    assert "export function watchFallen" in js
+    assert "watchFallen()" in js
+    assert "export function noteFallen" in js
+    choose = js[js.find("export async function chooseRobot") : js.find("async function calibrate")]
+    assert choose.find("this robot is already loaded") < choose.find("noteUnitChanged")
+    assert "if (opts.graphRunning && opts.live) return opts.live" in js
+    occupant = js[js.find("export function occupantRobot") : js.find("export function loadPlay")]
+    assert "if (opts.loading && opts.stored) return opts.stored" in occupant
+    assert "opts.live !== opts.stored" not in occupant
+    assert "return opts.stored" in occupant
+    assert "return ''" in occupant
+    reconcile = js[
+        js.find("export function reconcileRestoredPlay") : js.find("export function chooseSkill")
+    ]
+    assert "occupantRobot({" in reconcile
+    assert "(stored && stored.robot) || opts.liveRobot" not in reconcile
+    assert "return { step: 'idle', robot: '' }" in reconcile
+    assert "stored.step === 'calibrate'" in reconcile
+    assert "return { step: 'apply', robot }" in reconcile
+    assert "stored.step === 'calibrate' || stored.step === 'loading'" not in reconcile
+    assert "Load the unit" in js
+    assert "Nothing is loaded. Pick Bare Go2 or Go2 + Z1 (~30–90s)." in js
+    assert "loading ' + preset" not in js
+    assert "loading ' + robotLabel(preset)" in js
+    finish = js[js.find("async function finishLoad") : js.find("export async function onCalibrate")]
+    assert "waitForOccupant(robot)" in finish
+    assert "await calibrate()" in finish
+    assert "waiting for healthz" not in finish
+    assert "reloadAfterLoad(preset)" in js
+    assert "location.reload()" not in js[js.find("async function reloadAfterLoad") : js.find("async function finishLoad")]
+    boot = js[js.find("export function boot()") : js.find("async function probeGraphThenMaybeChoose")]
+    assert "paint('choose', { robot: '', skill, status: '', kind: '' })" in boot
+    assert "paint('idle', { robot: '', skill, status: '', kind: '' })" in boot
+    assert "load: 'Load the unit'" in app
+    assert 'placeholder="Load the unit"' in app
+    assert "primaryAction(step, robot)" in app
+    assert "1 · Load the unit" in html
+    assert "Nothing is loaded. Pick Bare Go2 or Go2 + Z1" in html
+    assert "1 · Choose robot" not in html
+
+
+def test_simple_js_conn_pill_matches_operator_dashboard() -> None:
+    """GET /simple header conn pill is the same 4-state ingest-age contract as `/`."""
+    ui_root = Path(__file__).resolve().parents[1] / "simple_ui"
+    dash = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "openral_observability"
+        / "dashboard"
+        / "static"
+        / "dashboard.js"
+    ).read_text(encoding="utf-8")
+    conn = (ui_root / "lib" / "conn.ts").read_text(encoding="utf-8")
+    indicator = (ui_root / "components" / "conn-indicator.tsx").read_text(encoding="utf-8")
+    app = (ui_root / "components" / "simple-play.tsx").read_text(encoding="utf-8")
+    css = (ui_root / "app" / "globals.css").read_text(encoding="utf-8")
+
+    assert "<ConnIndicator" in app
+    assert "from '@/components/conn-indicator'" in app
+    assert app.find("<header") < app.find("<Mark")
+    assert app.find("<header") < app.find("<ConnIndicator")
+    assert app.find("<header") < app.find('id="live-band"')
+    header = app[app.find("<header") : app.find("</header>")]
+    assert "items-center justify-between" in header
+    assert "w-full" in header
+    assert "max-w-[22rem]" not in header
+    assert "items-start" in header
+    assert "<Mark" in header
+    assert "<ConnIndicator" in header
+    assert app.find('id="primary"') < app.find('id="live-band"')
+    assert 'size="sm"' in app
+    assert "text-left" in app
+    assert "kind !== 'ok'" in app
+    assert "TextShimmer" in app
+    assert "No skill is applied" not in app
+
+    assert "export function classifyConn" in conn
+    assert "CONN_LIVE_S = 10" in conn
+    assert "CONN_DEAD_S = 60" in conn
+    assert "waiting…" in conn
+    assert "label: 'live'" in conn
+    assert "stale (" in conn
+    assert "dead (" in conn
+    assert "reconnecting…" in conn
+    assert "last_ingest_ts" in conn
+    assert "now_unix" in conn
+    assert "now_unix - last_ingest_ts" in conn
+
+    assert 'new EventSource("/api/stream")' in dash
+    assert "new EventSource('/api/stream')" in indicator
+    assert "CONN_RETRY_MS" in indicator
+    assert "CONN_POLL_MS" in indicator
+    assert "fetch('/api/state'" in indicator
+    assert "classifyConn({ unreachable: true })" in indicator
+    assert 'id="conn"' in indicator
+    assert 'id="conn-label"' in indicator
+    assert "TextShimmer" in indicator
+    assert "conn.kind === 'wait'" in indicator
+    assert 'className="conn-dot"' in indicator
+    assert 'data-kind={conn.kind}' in indicator
+
+    assert "dt < 10" in dash
+    assert "dt < 60" in dash
+    assert 'textContent = "waiting…"' in dash
+    assert 'textContent = "live"' in dash
+    assert "reconnecting…" in dash
+
+    assert ".conn-dot" in css
+    assert "border-radius: 50%" in css
+    assert "conn-blink" in css
+    assert "1.4s infinite" in css
+
+
+def test_simple_js_engine_cameras_and_start_errors() -> None:
+    """Engine screens hide pickers; top camera fills leftover viewport."""
+    ui_root = Path(__file__).resolve().parents[1] / "simple_ui"
+    js = (ui_root / "lib" / "play.ts").read_text(encoding="utf-8")
+    app = (ui_root / "components" / "simple-play.tsx").read_text(encoding="utf-8")
+
+    tile = (ui_root / "components" / "camera-tile.tsx").read_text(encoding="utf-8")
+    css = (ui_root / "app" / "globals.css").read_text(encoding="utf-8")
+
+    assert "LIVE_STEPS" in js
+    assert "showLive" in app
+    assert "CAM_TOP" in app
+    assert "CAM_FRONT" not in app
+    # Live order: compact primary under OP_CAL/conn, then UNIT + skill, top, LIVE.
+    assert app.find("UNIT") < app.find("CAM_TOP")
+    assert app.find('id="unit-select"') < app.find("CAM_TOP")
+    assert app.find('id="skill-select"') < app.find("CAM_TOP")
+    assert app.find("CAM_TOP") < app.find('id="live-pill"')
+    assert app.find('src="/api/camera/top/stream"') > app.find('id="live-band"')
+    assert 'src="/api/camera/front/stream"' not in app
+    band = app[app.find('id="live-band"') : app.find('id="live-pill"')]
+    assert "max-w-[22rem]" not in band
+    assert "w-full" in band
+    assert "grid-cols-1" in band
+    assert "flex-1" in band
+    cam_row = app[app.find('id="camera-top"') : app.find('id="live-pill"')]
+    assert "grid-cols-2" not in cam_row
+    assert "aspect-square" not in cam_row
+    assert 'className="absolute inset-0"' in cam_row
+    assert "RobotCard" not in app
+    assert "<Mark>OPENRAL</Mark>" not in app
+    assert "<Mark>SIMPLE</Mark>" not in app
+    assert "powered by openral" in app
+    assert "shrink-0" in app
+    assert "h-dvh" in app
+    assert "overflow-hidden" in app
+    assert "waiting for camera" not in app
+    assert "waiting for camera" not in tile
+    assert "connecting" in tile
+    assert "TextShimmer" not in tile
+    assert "no signal" in tile
+    assert "has-no-signal" in tile
+    assert "camera-still" in tile
+    assert "onError" not in tile
+    assert "onLoad" not in tile
+    assert "<img className=\"camera-stream\"" not in tile
+    assert "consumeMjpegStream" in tile
+    assert "createLatestFramePainter" in tile
+    assert "paintJpegToCanvas" in tile
+    mjpeg = (ui_root / "lib" / "mjpeg.ts").read_text(encoding="utf-8")
+    assert "function splitMjpegBuffer" in mjpeg
+    assert "function ownedBytes" in mjpeg
+    assert "createImageBitmap" in mjpeg
+    assert "frames[frames.length - 1]" in mjpeg
+    assert "content-length" in mjpeg
+    assert "fetch('/api/demo/cricket'" not in tile
+    assert 'fetch("/api/demo/cricket"' not in tile
+    assert "graph_running" not in tile
+    assert "start_in_progress" not in tile
+    assert "latest.jpg" in tile
+    assert "204" in tile
+
+    assert "has-no-signal" in css
+    assert "camera-still" in css
+    assert ":has(img[src])" in css
+    assert ".camera.has-mjpeg" in css
+    assert "min-height: 12rem" in css
+    assert "object-fit: cover" in css
+    assert ".hmi-mark" in css
+    assert "background: transparent" in css
+    assert "color: #fff" in css
+    frame = (ui_root / "components" / "hmi-frame.tsx").read_text(encoding="utf-8")
+    assert "hmi-mark hmi-mark-tl" in frame
+    assert "bg-transparent" in frame
+    assert "text-white" in frame
+    assert "export function classifyStartError" in js
+    assert "function startErrorFrom" in js
+    assert "credit|insufficient|quota|billing" in js
+    assert "not on path|source the workspace" in js
+    assert "timed out calling|reset_to_pose failed" in js
+    assert "cricket is disconnected" in js
+    assert "starting cricket graph… (~30-90s)" in js
+    assert "if (postedError)" in js
+    start_fn = js[js.find("async function startCricket") : js.find("async function finishLoad")]
+    assert start_fn.index("if (resp.ok && data.already_running)") < start_fn.index(
+        "const postedError"
+    )
+    poll_loop = start_fn.split("if (resp.status === 202)")[1]
+    assert poll_loop.index("if (st.graph_running)") < poll_loop.index("const pollError")
+    assert "kind: 'ok'" not in start_fn.split("if (resp.status === 202)")[1].split("if (st.graph_running)")[0]
+    assert "startInFlight" in js
+    assert "probeGraphThenMaybeChoose" in js
+    assert "async function watchIdleUntilGraph" in js
+    assert "async function ingestLive" in js
+    assert "void watchIdleUntilGraph()" in js
+    assert "if (!busy && snapshot.step === 'idle') return" not in js
+    assert "fail('idle'" in js
+    assert "Starting…" in app
+    assert "RESETTING…" in app
+    assert "STANDING…" not in app
+    assert "Loader2" in app
+    assert "engineScreen" in app
+    assert "COPY.idle" in app
+    assert 'id="status-slot"' in app
+    assert "min-h-[1.5rem]" in app
 
 
 def test_dashboard_js_mjpeg_is_streaming_without_img_load() -> None:
     """Opaque placeholder must drop when the stream URL is set, not on img.onload.
 
     Multipart MJPEG often never fires load; that left tiles on
-    "waiting for camera" while /api/camera/{front,top}/stream was live.
+    "waiting for camera" while /api/camera/top/stream was live.
     """
     root = Path(__file__).resolve().parents[1] / "src/openral_observability/dashboard/static"
     js = (root / "dashboard.js").read_text(encoding="utf-8")
@@ -687,17 +1351,52 @@ def test_dashboard_js_mjpeg_is_streaming_without_img_load() -> None:
     assert "cam.age_ms != null && cam.age_ms < 2000" in js
     assert ".camera:has(img[src]) .camera-placeholder" in css
     assert 'class="camera is-streaming"' in html
-    assert 'src="/api/camera/front/stream"' in html
+    assert 'src="/api/camera/front/stream"' not in html
     assert 'src="/api/camera/top/stream"' in html
+    assert 'class="camera-stream"' in html
+    assert 'class="camera-still"' in html
+    assert "ensureCameraPixels" in js
+    assert "/api/camera/" in js and "latest.jpg" in js
+    assert "mjpegHasPixels" in js
+    assert "has-mjpeg" in js
+    assert "still.src = url" in js
+    assert "img.src = url" not in js
+    assert "if (mjpegHasPixels(img)) return;" in js
+    assert "window.setInterval(kick, 1500)" in js
+    assert "window.setInterval(kick, 300)" not in js
+    assert 'fetch("/api/state", { cache: "no-store" })' not in js
+    assert ".camera.has-mjpeg img.camera-still" in css
 
 
 def test_go2_z1_embodiment_tags_intersect_go2_walk_skill() -> None:
     """Loader gate is tag intersection: go2 walk skill fits go2_z1."""
+    from openral_core.schemas import RSkillManifest
     from openral_observability.dashboard.demo_controls import robot_embodiment_tags
 
-    tags = robot_embodiment_tags("go2_z1")
-    assert "go2" in tags
-    assert "go2_z1" in tags
+    repo = Path(__file__).resolve().parents[3]
+    walk = RSkillManifest.from_yaml(
+        str(repo / "rskills" / "rsl-rl-onnx-go2-velocity-flat" / "rskill.yaml")
+    )
+    hop = RSkillManifest.from_yaml(
+        str(repo / "rskills" / "rsl-rl-onnx-go2-spring-jump" / "rskill.yaml")
+    )
+    arm = RSkillManifest.from_yaml(
+        str(repo / "rskills" / "rskill-zero-go2_z1-arm_ready-fp32" / "rskill.yaml")
+    )
+    go2 = set(robot_embodiment_tags("go2"))
+    z1 = set(robot_embodiment_tags("go2_z1"))
+
+    def fits(manifest: RSkillManifest, tags: set[str]) -> bool:
+        return bool(set(manifest.embodiment_tags) & tags)
+
+    assert "go2" in go2
+    assert "go2_z1" not in go2
+    assert "go2" in z1
+    assert "go2_z1" in z1
+    assert fits(walk, go2) and fits(walk, z1)
+    assert fits(hop, go2) and fits(hop, z1)
+    assert not fits(arm, go2)
+    assert fits(arm, z1)
 
 
 def test_is_walk_skill_id_matches_intree_and_hub() -> None:
@@ -707,6 +1406,8 @@ def test_is_walk_skill_id_matches_intree_and_hub() -> None:
     assert is_walk_skill_id("OpenRAL/rskill-rsl_rl_onnx-go2-velocity_flat-fp32")
     assert is_walk_skill_id("Acquire/rskill-rsl-rl-onnx-go2-velocity-flat")
     assert is_walk_skill_id("rsl-rl-onnx-go2-velocity-flat")
+    assert not is_walk_skill_id("OpenRAL/rskill-rsl_rl_onnx-go2-spring_jump-fp32")
+    assert not is_walk_skill_id("OpenRAL/rskill-zero-go2-hop-fp32")
     assert not is_walk_skill_id("OpenRAL/rskill-zero-go2_z1-arm_ready-fp32")
     assert not is_walk_skill_id("")
 
@@ -721,6 +1422,40 @@ def test_walk_skill_dispatch_ids_puts_selected_first() -> None:
     assert "OpenRAL/rskill-rsl_rl_onnx-go2-velocity_flat-fp32" in ids
     assert walk_skill_dispatch_ids("")[0] == acquire
     assert walk_skill_dispatch_ids("OpenRAL/rskill-zero-go2_z1-arm_ready-fp32")[0] == acquire
+    assert walk_skill_dispatch_ids("OpenRAL/rskill-rsl_rl_onnx-go2-spring_jump-fp32")[0] == acquire
+
+
+@pytest.mark.asyncio
+async def test_stand_response_passes_estop_publisher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recalibrate must clear the runner latch via EstopPublisher, not shell-out alone."""
+    from fastapi.responses import JSONResponse
+
+    from openral_observability.dashboard import demo_controls
+
+    seen: list[object] = []
+
+    class _FakeEstop:
+        available = True
+
+    async def _fake_reset(estop: object = None) -> JSONResponse:
+        seen.append(estop)
+        return JSONResponse({"status": "ok", "accepted": True}, status_code=200)
+
+    async def _fake_home() -> tuple[str, None]:
+        return "go2", None
+
+    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
+    monkeypatch.setattr(
+        "openral_observability.dashboard.app._estop_reset_response",
+        _fake_reset,
+    )
+    monkeypatch.setattr(demo_controls, "_reset_to_home_pose", _fake_home)
+    estop = _FakeEstop()
+    resp = await demo_controls.stand_response(estop=estop)
+    assert resp.status_code == 200
+    assert seen == [estop]
 
 
 def test_go2_z1_recalibrate_pose_is_arm_ready() -> None:
@@ -734,15 +1469,12 @@ def test_go2_z1_recalibrate_pose_is_arm_ready() -> None:
     assert _HOME_POSE_BY_ROBOT["go2"] == tuple(GO2_HOME_JOINT_TARGETS)
 
 
-@pytest.mark.asyncio
-async def test_demo_page_hides_run_strip_and_offers_apply_skill() -> None:
-    """Operator surface is one Apply button + skill picker, not Run plus Walk."""
-    app = create_app(TelemetryStore())
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        resp = await client.get("/")
-    assert resp.status_code == 200
-    html = resp.text
+def test_classic_page_hides_run_strip_and_offers_apply_skill() -> None:
+    """Retired classic HTML (not served at /) is one Apply + skill picker."""
+    html = (
+        Path(__file__).resolve().parents[1]
+        / "src/openral_observability/dashboard/static/index.html"
+    ).read_text(encoding="utf-8")
     assert 'id="demo-skill"' in html
     assert 'id="demo-apply"' in html
     assert "Apply skill" in html
@@ -1052,6 +1784,81 @@ async def test_camera_stream_emits_jpeg_part(
     assert jpeg in chunk
 
 
+def test_mjpeg_part_bytes_frames_jpeg() -> None:
+    import base64
+
+    from openral_observability.dashboard.app import _mjpeg_part, _mjpeg_part_bytes
+
+    jpeg = b"\xff\xd8\xff\xe0raw\xff\xd9"
+    part = _mjpeg_part_bytes(jpeg)
+    assert b"Content-Type: image/jpeg" in part
+    assert jpeg in part
+    assert _mjpeg_part(base64.b64encode(jpeg).decode("ascii")) == part
+
+
+def test_mjpeg_canvas_player_splits_content_length_parts() -> None:
+    """Wire format the /simple canvas player parses (lib/mjpeg.ts)."""
+    import re
+
+    from openral_observability.dashboard.app import _mjpeg_part_bytes
+
+    first = b"\xff\xd8\x00\xff\xd9"
+    second = b"\xff\xd8\x01\xff\xd9"
+    buf = _mjpeg_part_bytes(first) + _mjpeg_part_bytes(second)
+    frames: list[bytes] = []
+    offset = 0
+    while True:
+        boundary = buf.find(b"--frame", offset)
+        if boundary < 0:
+            break
+        headers_end = buf.find(b"\r\n\r\n", boundary)
+        assert headers_end > 0
+        header = buf[boundary:headers_end].decode("ascii")
+        match = re.search(r"Content-Length:\s*(\d+)", header, re.I)
+        assert match is not None
+        size = int(match.group(1))
+        body_start = headers_end + 4
+        frames.append(buf[body_start : body_start + size])
+        offset = body_start + size
+    assert frames == [first, second]
+
+
+def test_mjpeg_should_emit_heartbeats_identical_thumbs() -> None:
+    from openral_observability.dashboard.app import (
+        _MJPEG_HEARTBEAT_S,
+        _mjpeg_should_emit,
+    )
+
+    assert _mjpeg_should_emit("a", None, elapsed_s=0.0) is True
+    assert _mjpeg_should_emit("a", "a", elapsed_s=0.0) is False
+    assert _mjpeg_should_emit("a", "a", elapsed_s=_MJPEG_HEARTBEAT_S) is True
+    assert _mjpeg_should_emit("b", "a", elapsed_s=0.0) is True
+    assert _mjpeg_should_emit(None, "a", elapsed_s=1.0) is False
+
+
+@pytest.mark.asyncio
+async def test_camera_latest_jpg_returns_jpeg(
+    _otlp_camera_payload: Callable[[str, str], bytes],
+) -> None:
+    import base64
+
+    store = TelemetryStore()
+    app = create_app(store)
+    jpeg = b"\xff\xd8\xff\xe0jpegbytes\xff\xd9"
+    thumb_b64 = base64.b64encode(jpeg).decode("ascii")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        empty = await client.get("/api/camera/top/latest.jpg")
+        assert empty.status_code == 204
+        await client.post("/v1/traces", content=_otlp_camera_payload("wrist", thumb_b64))
+        resp = await client.get("/api/camera/wrist/latest.jpg")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("image/jpeg")
+        assert resp.content == jpeg
+        missing = await client.get("/api/camera/nope/latest.jpg")
+        assert missing.status_code == 404
+
+
 @pytest.mark.asyncio
 async def test_camera_stream_unknown_source_404() -> None:
     app = create_app(TelemetryStore())
@@ -1063,8 +1870,11 @@ async def test_camera_stream_unknown_source_404() -> None:
 
 @pytest.mark.asyncio
 async def test_empty_store_still_exposes_go2_hero_cameras() -> None:
-    """WAITING with no OTLP still advertises front (main) and top (side)."""
-    from openral_observability.dashboard.app import cricket_camera_stream_url
+    """WAITING with no OTLP still advertises top (3/4 twin)."""
+    from openral_observability.dashboard.app import (
+        cricket_camera_latest_url,
+        cricket_camera_stream_url,
+    )
     from openral_observability.dashboard.cricket_session import (
         DEFAULT_CRICKET_DASHBOARD_LOCAL_PORT,
         on_cricket_host,
@@ -1076,18 +1886,170 @@ async def test_empty_store_still_exposes_go2_hero_cameras() -> None:
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
         state = (await client.get("/api/state")).json()
     cameras = state["topics"]["perception"]["cameras"]
-    assert cameras["front"]["role"] == "main"
+    assert "front" not in cameras
     assert cameras["top"]["role"] == "side"
-    assert "thumbnail_jpeg_b64" not in cameras["front"]
+    assert "thumbnail_jpeg_b64" not in cameras["top"]
     if on_cricket_host():
-        assert cricket_camera_stream_url("front") is None
+        assert cricket_camera_stream_url("top") is None
+        assert cricket_camera_latest_url("top") is None
     else:
-        assert cricket_camera_stream_url("front") == (
-            f"http://127.0.0.1:{DEFAULT_CRICKET_DASHBOARD_LOCAL_PORT}/api/camera/front/stream"
-        )
         assert cricket_camera_stream_url("top") == (
             f"http://127.0.0.1:{DEFAULT_CRICKET_DASHBOARD_LOCAL_PORT}/api/camera/top/stream"
         )
+        assert cricket_camera_latest_url("top") == (
+            f"http://127.0.0.1:{DEFAULT_CRICKET_DASHBOARD_LOCAL_PORT}/api/camera/top/latest.jpg"
+        )
+
+
+@pytest.mark.asyncio
+async def test_laptop_latest_jpg_uses_cricket_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openral_observability.dashboard import app as app_mod
+
+    monkeypatch.setenv("OPENRAL_CRICKET_ROLE", "laptop")
+    jpeg = b"\xff\xd8\xff\xe0proxied\xff\xd9"
+
+    async def _fake_proxy(source: str) -> bytes | None:
+        return jpeg if source == "top" else None
+
+    monkeypatch.setattr(app_mod, "_proxied_cricket_latest_jpeg", _fake_proxy)
+    store = TelemetryStore()
+    app = create_app(store)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.get("/api/camera/top/latest.jpg")
+        assert resp.status_code == 200
+        assert resp.content == jpeg
+        missing = await client.get("/api/camera/nope/latest.jpg")
+        assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_laptop_latest_jpg_prefers_state_thumb(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openral_observability.dashboard import app as app_mod
+
+    monkeypatch.setenv("OPENRAL_CRICKET_ROLE", "laptop")
+    jpeg = b"\xff\xd8\xff\xe0state\xff\xd9"
+    monkeypatch.setattr(
+        app_mod, "_cricket_state_thumb_jpeg", lambda source: jpeg if source == "top" else None
+    )
+
+    async def _no_http(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("state thumb must win before cricket /latest.jpg")
+
+    monkeypatch.setattr(app_mod.httpx, "AsyncClient", _no_http)
+    got = await app_mod._proxied_cricket_latest_jpeg("top")
+    assert got == jpeg
+
+
+@pytest.mark.asyncio
+async def test_laptop_config_robot_id_from_cricket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENRAL_CRICKET_ROLE", "laptop")
+    monkeypatch.delenv("OPENRAL_ROBOT_ID", raising=False)
+    monkeypatch.setattr(
+        "openral_observability.dashboard.cricket_session.cricket_live_robot_id",
+        lambda: "go2",
+    )
+    store = TelemetryStore()
+    app = create_app(store)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        cfg = (await client.get("/api/config")).json()
+    assert cfg["robot_id"] == "go2"
+
+
+@pytest.mark.asyncio
+async def test_laptop_state_overlays_cricket_ingest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENRAL_CRICKET_ROLE", "laptop")
+    monkeypatch.setattr(
+        "openral_observability.dashboard.cricket_session.overlay_cricket_ingest",
+        lambda snap, **_kw: {
+            **snap,
+            "last_ingest_ts": 123.0,
+            "now_unix": 124.0,
+            "identity": {"openral.hal.robot.model": "go2"},
+        },
+    )
+    store = TelemetryStore()
+    app = create_app(store)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        state = (await client.get("/api/state")).json()
+    assert state["last_ingest_ts"] == 123.0
+    assert state["now_unix"] == 124.0
+    assert state["identity"]["openral.hal.robot.model"] == "go2"
+
+
+@pytest.mark.asyncio
+async def test_api_qpos_204_until_first_sample() -> None:
+    store = TelemetryStore()
+    app = create_app(store)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        empty = await client.get("/api/qpos")
+        assert empty.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_api_qpos_returns_go2_width_vector() -> None:
+    store = TelemetryStore()
+    qpos = [0.0, 0.0, 0.33, 1.0, 0.0, 0.0, 0.0] + [0.01 * i for i in range(12)]
+    qpos_values = [AnyValue(double_value=v) for v in qpos]
+    now = time.time_ns()
+    span = Span(
+        trace_id=b"\x11" * 16,
+        span_id=b"\x11" * 8,
+        name="hal.read_state",
+        start_time_unix_nano=now,
+        end_time_unix_nano=now + 1_000_000,
+        attributes=[
+            KeyValue(key="openral.hal.robot.model", value=AnyValue(string_value="go2")),
+            KeyValue(
+                key="openral.hal.joint.names",
+                value=AnyValue(
+                    array_value=ArrayValue(values=[AnyValue(string_value="FL_hip_joint")])
+                ),
+            ),
+            KeyValue(
+                key="openral.hal.joint.positions",
+                value=AnyValue(array_value=ArrayValue(values=[AnyValue(double_value=0.1)])),
+            ),
+            KeyValue(
+                key="openral.hal.qpos",
+                value=AnyValue(array_value=ArrayValue(values=qpos_values)),
+            ),
+            KeyValue(key="openral.hal.nq", value=AnyValue(int_value=19)),
+        ],
+        status=Status(code=0),
+    )
+    store.ingest_spans(
+        [
+            ResourceSpans(
+                resource=Resource(
+                    attributes=[KeyValue(key="service.name", value=AnyValue(string_value="ral"))]
+                ),
+                scope_spans=[ScopeSpans(spans=[span])],
+            )
+        ]
+    )
+    app = create_app(store)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.get("/api/qpos")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["nq"] == 19
+    assert body["robot_id"] == "go2"
+    assert body["qpos"] == qpos
+    assert body["age_ms"] is not None
+    assert body["fallen"] is False
 
 
 @pytest.mark.asyncio
@@ -1212,12 +2174,87 @@ async def test_skill_execute_503_without_ros2(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
+    monkeypatch.setenv("OPENRAL_CRICKET_ROLE", "host")
     monkeypatch.setenv("PATH", str(tmp_path))  # empty PATH → shutil.which("ros2") is None
     app = create_app(TelemetryStore())
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
         resp = await client.post("/api/skill/execute", json={"skill_id": "openral/skill-pick"})
     assert resp.status_code == 503
+    assert "not on PATH" in resp.json()["error"]
+
+
+@pytest.mark.asyncio
+async def test_laptop_recalibrate_graph_down_is_disconnected_not_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Laptop Calibrate must not ask the operator to source local ros2."""
+    from openral_observability.dashboard import cricket_session as cs
+
+    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
+    monkeypatch.setenv("OPENRAL_CRICKET_ROLE", "laptop")
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(cs, "cricket_graph_running", lambda: False)
+    monkeypatch.setattr(cs, "get_watch", lambda: None)
+    app = create_app(TelemetryStore())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.post("/api/demo/recalibrate")
+    assert resp.status_code == 503, resp.text
+    err = resp.json()["error"]
+    assert "not on PATH" not in err
+    assert "source the workspace" not in err
+    assert "disconnected" in err.lower()
+
+
+@pytest.mark.asyncio
+async def test_recalibrate_disconnected_does_not_retry_reset_to_pose(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One POST /api/demo/recalibrate; dead graph must not SSH ResetToPose."""
+    from openral_observability.dashboard import cricket_session as cs
+    from openral_observability.dashboard import demo_controls
+
+    calls: list[str] = []
+
+    async def boom(*args: object, **kwargs: object) -> tuple[bool, str]:
+        calls.append(str(args[0]) if args else "call")
+        return False, "should not run"
+
+    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
+    monkeypatch.setenv("OPENRAL_CRICKET_ROLE", "laptop")
+    monkeypatch.setattr(cs, "cricket_graph_running", lambda: False)
+    monkeypatch.setattr(cs, "get_watch", lambda: None)
+    monkeypatch.setattr(demo_controls, "_ros2_service_call", boom)
+    app = create_app(TelemetryStore())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.post("/api/demo/recalibrate")
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["error"] == "cricket is disconnected"
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_laptop_skill_execute_graph_down_is_disconnected_not_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from openral_observability.dashboard import cricket_session as cs
+
+    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
+    monkeypatch.setenv("OPENRAL_CRICKET_ROLE", "laptop")
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(cs, "cricket_graph_running", lambda: False)
+    monkeypatch.setattr(cs, "get_watch", lambda: None)
+    app = create_app(TelemetryStore())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.post("/api/skill/execute", json={"skill_id": "openral/skill-pick"})
+    assert resp.status_code == 503, resp.text
+    err = resp.json()["error"]
+    assert "not on PATH" not in err
+    assert "source the workspace" not in err
+    assert "disconnected" in err.lower()
 
 
 # ── async accept-then-track tests (issue #75c) ────────────────────────────────
@@ -1248,6 +2285,7 @@ def ros2_accepted_shim(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Itera
     )
     shim.chmod(shim.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("OPENRAL_CRICKET_ROLE", "host")
     yield log
 
 
@@ -1269,6 +2307,7 @@ def ros2_rejected_shim(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Itera
     )
     shim.chmod(shim.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("OPENRAL_CRICKET_ROLE", "host")
     yield log
 
 
@@ -1288,6 +2327,7 @@ def ros2_slow_shim(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[
     )
     shim.chmod(shim.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("OPENRAL_CRICKET_ROLE", "host")
     yield log
 
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -30,7 +30,135 @@ if TYPE_CHECKING:
 
 _MOCK_ACTION_DIM = 7
 _MOCK_STATE_DIM = 8
-_GO2_LEG_DOF = 12  # Go2 locomotion width; the scripted trot only applies at this DoF.
+_GO2_LEG_DOF = 12  # Go2 locomotion width; the scripted trot / hop only apply here.
+
+# Measured 2026-09-19 on the go2_walk floor with HAL walk PD (1 rad saturates
+# ctrlrange), policy_dt=0.02. A 0.16 s extend aborted at takeoff (calves still
+# ~−1.4 vs cmd −0.86) so the dog only bounced (~0.12 m COM, foot ≈0.17 m).
+# Crouch-extend-tuck-land lets the calves finish the push, then folds the
+# feet up in flight. Manifest ``policy_extras.jump_*`` may override these.
+# mjlab hop ONNX at trained scale 0.25 never commands this much calf travel.
+_GO2_JUMP_CROUCH: tuple[float, ...] = (
+    0.1,
+    1.70,
+    -2.65,
+    -0.1,
+    1.70,
+    -2.65,
+    0.1,
+    1.90,
+    -2.65,
+    -0.1,
+    1.90,
+    -2.65,
+)
+_GO2_JUMP_EXTEND: tuple[float, ...] = (
+    0.1,
+    0.05,
+    -0.84,
+    -0.1,
+    0.05,
+    -0.84,
+    0.1,
+    0.10,
+    -0.84,
+    -0.1,
+    0.10,
+    -0.84,
+)
+_GO2_JUMP_TUCK: tuple[float, ...] = (
+    0.1,
+    1.40,
+    -2.30,
+    -0.1,
+    1.40,
+    -2.30,
+    0.1,
+    1.60,
+    -2.30,
+    -0.1,
+    1.60,
+    -2.30,
+)
+# Land / recover. Same 12-D as ``GO2_HOP_JOINT_TARGETS``; pinned in
+# ``test_jump_stand_matches_hal_hop_stand`` — do not invent a fifth row.
+_GO2_JUMP_STAND: tuple[float, ...] = (
+    0.1,
+    0.8,
+    -1.5,
+    -0.1,
+    0.8,
+    -1.5,
+    0.1,
+    1.0,
+    -1.5,
+    -0.1,
+    1.0,
+    -1.5,
+)
+_JUMP_CROUCH_S: float = 0.30
+_JUMP_EXTEND_S: float = 0.24
+_JUMP_TUCK_S: float = 0.22
+_JUMP_RECOVER_S: float = 0.40
+
+
+def _jump_phase_ticks(
+    *,
+    dt: float,
+    crouch_s: float = _JUMP_CROUCH_S,
+    extend_s: float = _JUMP_EXTEND_S,
+    tuck_s: float = _JUMP_TUCK_S,
+    recover_s: float = _JUMP_RECOVER_S,
+) -> tuple[int, int, int, int]:
+    """Integer crouch / extend / tuck / recover tick counts for ``dt``."""
+    if dt <= 0.0:
+        return 1, 1, 0, 1
+    crouch = max(1, round(float(crouch_s) / dt))
+    extend = max(1, round(float(extend_s) / dt))
+    tuck = 0 if float(tuck_s) <= 0.0 else max(1, round(float(tuck_s) / dt))
+    recover = max(1, round(float(recover_s) / dt))
+    return crouch, extend, tuck, recover
+
+
+def _jump_leg_targets(
+    tick: int,
+    *,
+    dt: float,
+    crouch: NDArray[np.float32] | Sequence[float] | None = None,
+    extend: NDArray[np.float32] | Sequence[float] | None = None,
+    tuck: NDArray[np.float32] | Sequence[float] | None = None,
+    stand: NDArray[np.float32] | Sequence[float] | None = None,
+    crouch_s: float = _JUMP_CROUCH_S,
+    extend_s: float = _JUMP_EXTEND_S,
+    tuck_s: float = _JUMP_TUCK_S,
+    recover_s: float = _JUMP_RECOVER_S,
+) -> NDArray[np.float32]:
+    """One 12-D crouch / extend / tuck / land row for scripted Go2 hop.
+
+    ``tick`` is 1-based (``_ZeroPolicy.step`` increments first). Phase
+    lengths come from the measured go2_walk floor rollout. A zero
+    ``tuck_s`` skips the flight fold.
+    """
+    n_crouch, n_extend, n_tuck, n_recover = _jump_phase_ticks(
+        dt=dt,
+        crouch_s=crouch_s,
+        extend_s=extend_s,
+        tuck_s=tuck_s,
+        recover_s=recover_s,
+    )
+    crouch_row = np.asarray(_GO2_JUMP_CROUCH if crouch is None else crouch, dtype=np.float32)
+    extend_row = np.asarray(_GO2_JUMP_EXTEND if extend is None else extend, dtype=np.float32)
+    tuck_row = np.asarray(_GO2_JUMP_TUCK if tuck is None else tuck, dtype=np.float32)
+    stand_row = np.asarray(_GO2_JUMP_STAND if stand is None else stand, dtype=np.float32)
+    period = n_crouch + n_extend + n_tuck + n_recover
+    index = max(tick - 1, 0) % period
+    if index < n_crouch:
+        return crouch_row
+    if index < n_crouch + n_extend:
+        return extend_row
+    if n_tuck and index < n_crouch + n_extend + n_tuck:
+        return tuck_row
+    return stand_row
 
 
 @dataclass
@@ -163,12 +291,12 @@ def _load_controller_json(spec: VLASpec) -> dict[str, Any]:
 
 @dataclass
 class _ZeroPolicy:
-    """N-D scripted hold (optional trot). Defaults to zeros when no targets.
+    """N-D scripted hold (optional trot / hop). Defaults to zeros when no targets.
 
     In-tree factory key ``zero``. Used by unit tests and by scripted pose
-    rSkills (Go2+Z1 arm ready). Not a learned VLA — ``hold_targets`` /
-    ``gait`` / named ``poses`` come from ``VLASpec.extra`` (manifest
-    ``policy_extras``) or ``controller.json``.
+    rSkills (Go2+Z1 arm ready, Go2 hop). Not a learned VLA — ``hold_targets``
+    / ``gait`` / named ``poses`` / ``jump_*`` come from ``VLASpec.extra``
+    (manifest ``policy_extras``) or ``controller.json``.
     """
 
     spec: VLASpec
@@ -180,12 +308,25 @@ class _ZeroPolicy:
     gait_hz: float = 1.5
     dt: float = 1.0 / 30.0
     poses: dict[str, list[float]] = field(default_factory=dict)
+    jump_crouch: NDArray[np.float32] | None = None
+    jump_extend: NDArray[np.float32] | None = None
+    jump_tuck: NDArray[np.float32] | None = None
+    jump_crouch_s: float = _JUMP_CROUCH_S
+    jump_extend_s: float = _JUMP_EXTEND_S
+    jump_tuck_s: float = _JUMP_TUCK_S
+    jump_recover_s: float = _JUMP_RECOVER_S
     _default_hold: NDArray[np.float32] | None = None
     _tick: int = field(default=0)
 
     def __post_init__(self) -> None:
         if self._default_hold is None and self.hold_targets is not None:
             self._default_hold = np.array(self.hold_targets, dtype=np.float32, copy=True)
+        if self.jump_crouch is None:
+            self.jump_crouch = np.asarray(_GO2_JUMP_CROUCH, dtype=np.float32)
+        if self.jump_extend is None:
+            self.jump_extend = np.asarray(_GO2_JUMP_EXTEND, dtype=np.float32)
+        if self.jump_tuck is None:
+            self.jump_tuck = np.asarray(_GO2_JUMP_TUCK, dtype=np.float32)
 
     def reset(self) -> None:
         self._tick = 0
@@ -206,9 +347,7 @@ class _ZeroPolicy:
         key = str(name).strip().lower()
         if key not in self.poses:
             known = ", ".join(sorted(self.poses)) or "(none)"
-            raise ROSConfigError(
-                f"zero policy unknown pose {name!r}; known poses: {known}"
-            )
+            raise ROSConfigError(f"zero policy unknown pose {name!r}; known poses: {known}")
         return self.set_arm_targets(self.poses[key])
 
     def set_arm_targets(self, arm: Sequence[float] | None) -> NDArray[np.float32] | None:
@@ -255,6 +394,24 @@ class _ZeroPolicy:
             action[11] -= 0.5 * delta
             action[5] += 0.5 * delta
             action[8] += 0.5 * delta
+        if self.gait == "jump" and action.shape[0] >= _GO2_LEG_DOF:
+            stand = (
+                action[:_GO2_LEG_DOF]
+                if self.hold_targets is not None and self.hold_targets.shape[0] >= _GO2_LEG_DOF
+                else None
+            )
+            action[:_GO2_LEG_DOF] = _jump_leg_targets(
+                self._tick,
+                dt=self.dt,
+                crouch=self.jump_crouch,
+                extend=self.jump_extend,
+                tuck=self.jump_tuck,
+                stand=stand,
+                crouch_s=self.jump_crouch_s,
+                extend_s=self.jump_extend_s,
+                tuck_s=self.jump_tuck_s,
+                recover_s=self.jump_recover_s,
+            )
         return action
 
     def close(self) -> None:
@@ -352,6 +509,49 @@ def _resolve_hold(
     return targets, gait, gait_amp, gait_hz, dt
 
 
+def _leg_row(
+    extra: Mapping[str, object], file_cfg: Mapping[str, object], key: str
+) -> NDArray[np.float32] | None:
+    """Optional 12-D jump pose from ``policy_extras`` or ``controller.json``."""
+    raw = extra.get(key)
+    if raw is None:
+        raw = file_cfg.get(key)
+    values = _float_list(raw, n=_GO2_LEG_DOF)
+    if values is None:
+        return None
+    return np.asarray(values, dtype=np.float32)
+
+
+def _resolve_jump(
+    extra: Mapping[str, object], file_cfg: Mapping[str, object]
+) -> tuple[
+    NDArray[np.float32] | None,
+    NDArray[np.float32] | None,
+    NDArray[np.float32] | None,
+    float,
+    float,
+    float,
+    float,
+]:
+    """Crouch / extend / tuck poses and phase times for ``gait: jump``."""
+
+    def _seconds(key: str, default: float) -> float:
+        raw = extra.get(key)
+        if raw is None:
+            raw = file_cfg.get(key)
+        return _coerce_float(raw, default)
+
+    return (
+        _leg_row(extra, file_cfg, "jump_crouch"),
+        _leg_row(extra, file_cfg, "jump_extend"),
+        _leg_row(extra, file_cfg, "jump_tuck"),
+        _seconds("jump_crouch_s", _JUMP_CROUCH_S),
+        _seconds("jump_extend_s", _JUMP_EXTEND_S),
+        _seconds("jump_tuck_s", _JUMP_TUCK_S),
+        _seconds("jump_recover_s", _JUMP_RECOVER_S),
+    )
+
+
 def _named_poses(raw: object) -> dict[str, list[float]]:
     """Parse a ``poses: {name: [floats]}`` mapping; skip ill-typed entries."""
     if not isinstance(raw, dict):
@@ -407,6 +607,7 @@ def apply_zero_pose_override(
         ...     def set_named_pose(self, name):
         ...         self.pose = name
         ...         return None
+        ...
         ...     def set_arm_targets(self, arm):
         ...         self.arm = list(arm)
         ...         return None
@@ -460,6 +661,9 @@ def _build_zero_policy(env_cfg: SimEnvironment) -> _ZeroPolicy:
     poses = _named_poses(extra.get("poses"))
     if not poses:
         poses = _named_poses(file_cfg.get("poses"))
+    jump_crouch, jump_extend, jump_tuck, crouch_s, extend_s, tuck_s, recover_s = _resolve_jump(
+        extra, file_cfg
+    )
     policy = _ZeroPolicy(
         spec=env_cfg.vla,
         device="cpu",
@@ -470,6 +674,13 @@ def _build_zero_policy(env_cfg: SimEnvironment) -> _ZeroPolicy:
         gait_hz=gait_hz,
         dt=dt,
         poses=poses,
+        jump_crouch=jump_crouch,
+        jump_extend=jump_extend,
+        jump_tuck=jump_tuck,
+        jump_crouch_s=crouch_s,
+        jump_extend_s=extend_s,
+        jump_tuck_s=tuck_s,
+        jump_recover_s=recover_s,
     )
     default_pose = extra.get("default_pose") or file_cfg.get("default_pose")
     if isinstance(default_pose, str) and default_pose.strip() and poses:

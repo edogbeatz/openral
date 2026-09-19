@@ -40,6 +40,11 @@ from openral_hal.go2 import GO2_HOME_JOINT_TARGETS, Go2MujocoHAL, _go2_pd_gains
 #: (``arm_ready`` / Recalibrate). Walk's rsl-rl output leaves this band.
 _HUB_STAND_LEG_TOL_RAD: Final[float] = 0.15
 
+#: Width of the base free joint's ``qpos`` block (xyz + wxyz). An arm joint
+#: whose address falls inside it is not an arm joint — it is the floating base,
+#: and writing a servo target there would teleport the dog.
+_FREE_JOINT_QPOS_WIDTH: Final[int] = 7
+
 __all__ = [
     "GO2_Z1_ARM_FOLD",
     "GO2_Z1_ARM_HOME",
@@ -47,6 +52,7 @@ __all__ = [
     "GO2_Z1_ARM_READY",
     "GO2_Z1_HOME_JOINT_TARGETS",
     "GO2_Z1_LEG_JOINT_NAMES",
+    "GO2_Z1_SPAWN_JOINT_TARGETS",
     "Go2Z1MujocoHAL",
 ]
 
@@ -76,10 +82,35 @@ GO2_Z1_ARM_FOLD: Final[tuple[float, ...]] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 #: Distinct from :data:`GO2_Z1_ARM_HOME` so a future arm skill is visible.
 GO2_Z1_ARM_READY: Final[tuple[float, ...]] = (0.0, 1.2, -1.0, -0.4, 0.0, 0.0, 0.0)
 
-#: Full 19-DoF spawn pose: Hub stand for the legs, ``home`` for the arm.
+#: Full 19-DoF vector of Hub stand + the menagerie arm ``home`` keyframe. This is
+#: the literal upstream home, **not** what this twin spawns at — see
+#: :data:`GO2_Z1_SPAWN_JOINT_TARGETS`.
 GO2_Z1_HOME_JOINT_TARGETS: Final[tuple[float, ...]] = (
     *GO2_HOME_JOINT_TARGETS,
     *GO2_Z1_ARM_HOME,
+)
+
+#: Full 19-DoF **spawn** pose: Hub stand for the legs, ``ready`` for the arm.
+#:
+#: The arm spawns at ``ready`` rather than the menagerie ``home`` because
+#: ``home`` does not survive a walk at honest arm mass. A 12-D locomotion row
+#: leaves the arm on whatever the sticky hold is, and on a fresh connect that
+#: hold is the spawn pose — so with ``arm_mass_scale: 1.0`` and no prior
+#: Recalibrate, ``rskill-rsl_rl_onnx-go2-velocity_flat`` tipped the composite in
+#: ~0.7 s on 8 of 8 randomised rollouts from ``home`` while surviving 8 of 8
+#: from ``ready``. Measured by ``tools/go2_z1_mass_balance.py walk``; the batteries
+#: and the two rejected explanations (centre-of-mass offset, pitch inertia —
+#: neither predicts survival) are in
+#: ``docs/reference/go2-z1-mass-balance.md``.
+#:
+#: This makes the default agree with the operating procedure the live demo
+#: already required by hand: Recalibrate (which parks at ``ready``) *before*
+#: applying a gait. ``arm_mass_scale: 0.01`` masks the difference entirely —
+#: every named pose survives at that scale — so the manifest's current
+#: locomotion default hides this rather than fixing it.
+GO2_Z1_SPAWN_JOINT_TARGETS: Final[tuple[float, ...]] = (
+    *GO2_HOME_JOINT_TARGETS,
+    *GO2_Z1_ARM_READY,
 )
 
 
@@ -91,7 +122,7 @@ class Go2Z1MujocoHAL(Go2MujocoHAL):
     then the Z1's 6 arm joints, then the jaw. A 12-DoF locomotion policy's
     action therefore still lands on the joints it was trained for.
 
-    The arm hold starts at spawn home. A 19-D row whose legs are still Hub
+    The arm hold starts at :data:`GO2_Z1_SPAWN_JOINT_TARGETS`. A 19-D row whose legs are still Hub
     stand (Recalibrate, ``rskill-zero-go2_z1-arm_ready-fp32``) writes the
     arm slots into the hold. 12-D locomotion and hold-padded 19-D walk
     rows pin the arm to that hold and qpos-snap **arm joints only**
@@ -143,8 +174,8 @@ class Go2Z1MujocoHAL(Go2MujocoHAL):
     def _home_targets(self) -> tuple[float, ...]:
         """Spawn pose sized to whatever joint list the manifest declared."""
         n = len(self._joint_names)
-        if n == len(GO2_Z1_HOME_JOINT_TARGETS):
-            return GO2_Z1_HOME_JOINT_TARGETS
+        if n == len(GO2_Z1_SPAWN_JOINT_TARGETS):
+            return GO2_Z1_SPAWN_JOINT_TARGETS
         # A manifest with a different arm still gets the legs' Hub stand; the
         # remaining joints spawn at 0, which every position servo accepts.
         return (*GO2_HOME_JOINT_TARGETS, *((0.0,) * (n - len(GO2_HOME_JOINT_TARGETS))))
@@ -152,6 +183,19 @@ class Go2Z1MujocoHAL(Go2MujocoHAL):
     def _arm_hold(self) -> list[float]:
         """Sticky arm+jaw targets — last Recalibrate / arm_ready pose."""
         return list(self._arm_hold_pose)
+
+    @property
+    def arm_hold_pose(self) -> tuple[float, ...]:
+        """The sticky 7-D Z1 hold a 12-D locomotion row will keep enforcing.
+
+        Read-only view of the state that decides what the arm does during a
+        gait. Worth being able to observe from outside: whether a walk started
+        from the spawn pose or from a Recalibrate is invisible in a 12-D action
+        stream, and that distinction is what
+        `tools/go2_z1_mass_balance.py walk` and the composite's spawn
+        regression test compare.
+        """
+        return tuple(self._arm_hold_pose)
 
     def _row_is_leg_only(self, action: Action) -> bool:
         """True when every waypoint is the 12-D Go2 locomotion width."""
@@ -227,8 +271,7 @@ class Go2Z1MujocoHAL(Go2MujocoHAL):
             if name in self._leg_joints:
                 continue
             qpos_addr = self._joint_qpos_addr.get(name)
-            # Free-joint xyz+quat occupies qpos[0:7] on this twin.
-            if qpos_addr is None or qpos_addr < 7:
+            if qpos_addr is None or qpos_addr < _FREE_JOINT_QPOS_WIDTH:
                 continue
             self._data.qpos[qpos_addr] = float(target)
             qvel_addr = self._joint_qvel_addr.get(name)
@@ -243,6 +286,7 @@ class Go2Z1MujocoHAL(Go2MujocoHAL):
         expanded = self._expand_leg_only_targets(list(pose))
         MujocoArmHAL.reset_to_pose(self, expanded)
         self._hold_targets = list(expanded)
+        self._pd_gains = _go2_pd_gains()
         self._per_step_update(self._hold_targets)
         self._snap_arm_hold(self._arm_hold())
         self._snap_base_upright(origin=True)

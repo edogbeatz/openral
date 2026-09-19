@@ -403,6 +403,11 @@ contributor should look at before adding similar code.
   via `_ManifestHALLifecycleNode`. The `panda_mobile` package retains its own wiring until
   the planned dedup refactor lands. **Do NOT add per-arm camera or viewer
   timers in lifecycle subclasses; extend `SimSensorBridge` instead.**
+  **Do NOT add a second JPEG encoder** for Foxglove: `_publish_compressed` reuses
+  the dashboard thumbnail already encoded for the OTel span. Sim `--foxglove`
+  must not spawn `image_transport republish` (that subscribed the raw RGB8
+  topic and forced a ~900 KiB GIL copy per camera). Real cells still use the
+  republishers because the sensor leg's ROS tee is raw `Image`.
   Its two MJCF body-set resolvers answer different questions and are ***not
   a duplication target***: `depth_cloud.robot_self_body_ids` is "what is the
   robot" (prefix-derived, includes descendants — the depth self-filter),
@@ -698,6 +703,18 @@ contributor should look at before adding similar code.
   - rpy→matrix/euler in `openral_safety/…/{mjcf,urdf}_lowering.py` is
     safety-kernel lowering; touching it needs safety-WG review + a
     recorded safety-impact update (CLAUDE.md §3), so it does not move on a cleanup PR.
+  - hop `euler_rpy_from_quat_xyzw` in `openral_sim/…/policies/rsl_rl_onnx.py`
+    is pinned to `Renkunzhao/legged_rl_deploy` `PolicySlot::quatToRpy`
+    (aerospace XYZ); it is a calibration surface for the 470-D hop obs,
+    not a second caller of the geometry helpers above.
+  - dashboard `_fall.tilt_off_vertical_wxyz` / `qpos_is_fallen` is the
+    `/simple` chat tip gate on MuJoCo free-joint **wxyz**. The 1.0 rad
+    threshold is the same number as `tools/go2_z1_mass_balance.py`
+    `TIP_TILT_RAD`, which takes Isaac `quat_xyzw` via
+    `projected_gravity_from_quat_xyzw`. Do not merge: the tool may import
+    sim; layer-7 dashboard must not. A new caller that already has
+    `quat_xyzw` should keep using the sim helper (or the mass-balance
+    tool); a new caller that already has `qpos` should use `_fall`.
   - the remaining `_quat_to_matrix` (`world_cloud_bridge.py`, float32) and
     `_rpy_to_*` (`bucket2_markers.py`, `depth_height_filter_node.py`) are
     single-caller and return package-specific types; consolidating them
@@ -925,3 +942,66 @@ pattern in `tools/schema_export.py`.*
     (`arm_ready` / Recalibrate) and updates that hold. Zero-filling the
     pad folds Z1 position servos to 0. Do not invent a third helper, and
     do not import `_hold_pad` into `python/hal/`.
+46. **rSkill id encodings for two consumers — do not merge.**
+    `tool_use._skill_id_to_tool_name` hashes Hub ids into 64-char
+    `execute_rskill__<slug>_<sha1-8>` names for Anthropic/OpenAI tool
+    schemas. `typesafe_questions.choice_key_for_rskill_id` is a
+    reversible `/` → `__` map so TypeSafe Choice keys stay identifiers.
+    Same id, different grammars and invertibility contracts. Do not feed
+    TypeSafe the hashed LLM tool name, and do not send `__` keys to the
+    ExecuteRskill action.
+47. **Scene-composition invocation — two callers, do not merge.**
+    `ManifestHALLifecycleNode._compose_scene_mjcf` writes the HAL's live
+    MJCF (sim callback, meshdir next to composer output).
+    `openral_cli.viz.resolve_viz_mjcf` is the same importlib
+    `composer(**params)` so a laptop kinematic viewer loads matching `nq`
+    (Go2+Z1 arm mount). Do not import the lifecycle node into the CLI,
+    and do not add a third composer runner. A shared helper in
+    `openral_sim.scene_composers` is the follow-up if a third caller
+    appears.
+48. **Dashboard operator prompt publish — one helper.**
+    `openral_observability.dashboard.chat.publish_operator_prompt` is the
+    only `openral prompt --topic /openral/prompt_in/dashboard` shell-out.
+    `POST /api/prompt` calls it. `POST /api/chat` is Acquire probe/ask
+    and must not publish (TypeSafe can skip-LLM walk). Do not add a
+    second subprocess, and do not put an LLM on the dashboard — S2 stays
+    in the reasoner.
+48a. **Dashboard Acquire HTTP — one client.**
+    `openral_observability.dashboard.acquire_client.AcquireClient` is the
+    only sibling `POST /v1/skills/acquire` caller. Do not add a second
+    client, and do not reimplement `evaluate_gate` / `adapt.py` here.
+48b. **Dashboard Acquire env file — one loader.**
+    `apply_dashboard_env` / `parse_dashboard_env` /
+    `write_dashboard_acquire_env` in `acquire_client.py` are the only
+    readers of `~/.openral/dashboard.env`. Do not add python-dotenv or
+    a second KEY=VALUE parser. `create_app` / `client_from_env` must
+    not load that file (tests would pick up the operator key).
+49. **Go2 hop stand — copies, one meaning.**
+    `GO2_HOP_JOINT_TARGETS` in `openral_hal.go2` is the land / Apply
+    stand. Same 12-D row:
+    `rskills/rsl-rl-onnx-go2-hop-flat` `starting_pose` +
+    `default_joint_pos`, `rskills/rskill-zero-go2-hop-fp32`
+    `starting_pose` + `hold_targets`, and
+    `openral_sim.policies.mock._GO2_JUMP_STAND`. HAL cannot import the
+    rSkill; the zero policy cannot import the HAL. Pins:
+    `test_intree_hop_manifest_from_yaml` /
+    `test_hop_deploy_yaml_is_470d_term_major` /
+    `test_jump_stand_matches_hal_hop_stand` /
+    `test_manifest_loads_and_is_canonical` (scripted hop). Scripted hop
+    crouch/extend/tuck rows and phase times live in both
+    `rskill-zero-go2-hop-fp32` `policy_extras.jump_*` and
+    `mock.py` `_GO2_JUMP_*` / `_JUMP_*_S` (same pin). Gym spring_jump
+    (`rskills/rsl-rl-onnx-go2-spring-jump`) is a **different** stand
+    (hips 0.0, not ±0.1) — do not pin it to `GO2_HOP_JOINT_TARGETS`.
+    Dashboard hop Apply uses that rSkill's `starting_pose`. Do not pin
+    Hub `_stand_base_z` under a hop joint snap, and do not switch the
+    torque-motor HAL onto Isaac hop `kp=20` (calves sag).
+50. **Go2 walk coast-to-stand — one helper.**
+    `coast_velocity_commands` / `in_coast_to_stand_window` /
+    `resolve_coast_to_stand_s` / `resolve_coast_budget_s` in
+    `openral_sim.policies.rsl_rl_onnx` are the only stand-down. The
+    adapter applies them on `_step_index * step_dt`; the runner also
+    zeros `obs["velocity_commands"]` on wall-clock remaining so a slow
+    tick still coasts before `max_execution_s`. Do not add a second
+    "slow to stand" in the dashboard Stop path (that stays Hub
+    `ResetToPose`) or a per-skill copy of the window test.

@@ -2,9 +2,14 @@
 
 The same ASGI app serves three things on one port:
 
-* ``/``, ``/static/*`` — the single-page UI.
+* ``/simple`` — the operator dashboard (Next.js 16 + shadcn New York /
+  Zappi). ``GET /`` redirects here; the classic root page is not started.
+  Retired ``static/index.html`` stays on disk and is not served.
+* ``/static/*`` — shared static assets (simple-ui export + leftover classic).
 * ``/api/state`` (JSON) and ``/api/stream`` (SSE) — read endpoints
   consumed by the page's JavaScript.
+* ``/api/qpos`` — slim MuJoCo ``qpos`` JSON for ``openral viz mujoco``
+  (no camera thumbs, no event ring).
 * ``/v1/traces``, ``/v1/metrics``, ``/v1/logs`` — OTLP/HTTP protobuf
   receivers. Any OpenRAL workload pointed at this port via
   ``OTEL_EXPORTER_OTLP_ENDPOINT=http://<host>:<port>`` +
@@ -15,6 +20,10 @@ The same ASGI app serves three things on one port:
 * ``POST /api/prompt`` — operator-driven write endpoint that shells
   out to ``openral prompt`` (the operator-prompt dispatch path) targeting
   the prompt-router's ``dashboard`` source.
+* ``POST /api/chat`` — Acquire probe/ask stream for the ``/simple`` Go2
+  chat sidebar (Vercel json-render ``useChatUI``). Does not publish a
+  reasoner prompt. ``POST /api/prompt`` still shells out to
+  ``openral prompt``.
 * ``POST /api/estop_reset`` — operator recovery: clears a latched safety
   e-stop by calling the kernel's ``/openral/estop_reset`` (std_srvs/Trigger)
   service via ``ros2 service call``, so the robot can be re-tasked after an
@@ -34,17 +43,17 @@ import json
 import mimetypes
 import os
 import re
-import shutil
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 from urllib.parse import quote
 
 import httpx
 import structlog
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from google.protobuf.message import DecodeError
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import (
@@ -60,9 +69,10 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
     ExportTraceServiceResponse,
 )
 
+from openral_observability.dashboard.acquire_client import client_from_env
 from openral_observability.dashboard.store import HERO_CAMERA_KEYS, TelemetryStore
 
-__all__ = ["create_app", "cricket_camera_stream_url"]
+__all__ = ["create_app", "cricket_camera_latest_url", "cricket_camera_stream_url"]
 
 _logger = structlog.get_logger(__name__)
 
@@ -72,6 +82,16 @@ _STATIC_DIR = Path(__file__).parent / "static"
 def _write_controls_enabled() -> bool:
     """Whether guarded write-controls are on (default OFF)."""
     return os.environ.get("OPENRAL_DASHBOARD_WRITE_CONTROLS", "") == "1"
+
+
+def _joystick_from_body(raw: object) -> list[float] | None:
+    """Parse TypeSafe-shaped ``[vx, vy, yaw]`` from a walk POST body."""
+    if not isinstance(raw, list) or len(raw) != _WALK_JOYSTICK_DIM:
+        return None
+    try:
+        return [float(raw[0]), float(raw[1]), float(raw[2])]
+    except (TypeError, ValueError):
+        return None
 
 
 # Param-name substrings that may affect safety; the dashboard refuses to tune
@@ -99,6 +119,11 @@ _SAFETY_PARAM_DENYLIST = (
     "watchdog",
 )
 _MJPEG_BOUNDARY = "frame"
+# Browsers paint a multipart/x-mixed-replace part only when the *next*
+# ``--boundary`` arrives. The store used to emit a part only when JPEG bytes
+# changed, so a standing robot (identical thumbs) sent one part forever and
+# the tiles stayed the dark wrap + crosshair while LIVE / fps updated from SSE.
+_MJPEG_HEARTBEAT_S: Final[float] = 0.2
 
 # Background drain tasks created by _skill_execute_response are stored here so
 # the event loop does not GC them before they finish.  Each task removes itself
@@ -111,6 +136,7 @@ _GOAL_REJECTED_PHRASE = "Goal was rejected"
 
 # Default acceptance timeout in seconds (overridden by env).
 _DEFAULT_SKILL_ACCEPT_TIMEOUT_S = 12.0
+_WALK_JOYSTICK_DIM: Final[int] = 3
 
 # POST paths that count as operator activity for cricket idle auto-stop.
 # GET /api/demo/cricket (countdown poll) is intentionally absent.
@@ -118,6 +144,7 @@ _OPERATOR_TOUCH_PREFIXES: tuple[str, ...] = (
     "/api/demo",
     "/api/skill/",
     "/api/prompt",
+    "/api/chat",
     "/api/estop",
     "/api/param/",
     "/api/transcribe",
@@ -279,41 +306,14 @@ async def _transcribe_response(audio: bytes) -> JSONResponse:
 async def _prompt_response(text: str) -> JSONResponse:
     """Publish an operator prompt via ``openral prompt``.
 
-    Shells out so the wire shape (PromptStamped on
-    ``/openral/prompt_in/dashboard``, fanned out by ``prompt_router_node`` at
-    priority 100) matches the CLI exactly. The console script is ``openral``,
-    the single entry point. Body lives here to keep ``create_app`` under the
-    statement cap.
+    Delegates to ``chat.publish_operator_prompt`` so ``POST /api/prompt`` and
+    ``POST /api/chat`` share one shell-out (PromptStamped on
+    ``/openral/prompt_in/dashboard``, fanned out by ``prompt_router_node``).
     """
-    openral = shutil.which("openral")
-    if openral is None:
-        return JSONResponse(
-            {"error": "`openral` not on PATH; source the workspace install first"},
-            status_code=503,
-        )
-    proc = await asyncio.create_subprocess_exec(
-        openral,
-        "prompt",
-        text,
-        "--topic",
-        "/openral/prompt_in/dashboard",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=10.0)
-    except TimeoutError:
-        proc.kill()
-        await proc.wait()
-        return JSONResponse({"error": "openral prompt timed out after 10 s"}, status_code=504)
-    stdout = stdout_b.decode("utf-8", errors="replace").strip()
-    stderr = stderr_b.decode("utf-8", errors="replace").strip()
-    if proc.returncode != 0:
-        return JSONResponse(
-            {"error": "openral prompt failed", "returncode": proc.returncode, "stderr": stderr},
-            status_code=502,
-        )
-    return JSONResponse({"status": "ok", "stdout": stdout, "stderr": stderr})
+    from openral_observability.dashboard.chat import publish_operator_prompt
+
+    result = await publish_operator_prompt(text)
+    return JSONResponse(result.payload, status_code=result.status_code)
 
 
 async def _estop_reset_response(estop: Any = None) -> JSONResponse:
@@ -323,33 +323,39 @@ async def _estop_reset_response(estop: Any = None) -> JSONResponse:
     until this ``std_srvs/Trigger`` service is called — so after an e-stop NO
     prompt does anything until the latch is cleared. The reset itself is a
     ``ros2 service call`` (a service is request/response, so no discovery race).
-    The kernel enforces a post-estop cooldown; an early call returns
+    A laptop dashboard SSHes that call into cricket; a down graph is
+    ``cricket is disconnected``, never a local PATH hint. The kernel
+    enforces a post-estop cooldown; an early call returns
     ``success=false`` (HTTP 409) so the operator can retry. On success we also
     broadcast ``/openral/estop_cleared`` so the HAL + runner un-latch too —
     instantly via ``estop`` (the persistent publisher) when present, else the
     shell-out fallback. Re-prompt via ``/api/prompt`` once this succeeds.
     """
-    ros2 = shutil.which("ros2")
-    if ros2 is None:
+    from openral_observability.dashboard.cricket_session import (
+        CRICKET_DISCONNECTED_MSG,
+        spawn_ros2,
+    )
+
+    proc, ros2_err = await spawn_ros2(
+        ["service", "call", "/openral/estop_reset", "std_srvs/srv/Trigger", "{}"]
+    )
+    if ros2_err is not None or proc is None:
         return JSONResponse(
-            {"error": "`ros2` not on PATH; source the workspace install first"},
+            {"error": ros2_err or CRICKET_DISCONNECTED_MSG},
             status_code=503,
         )
-    proc = await asyncio.create_subprocess_exec(
-        ros2,
-        "service",
-        "call",
-        "/openral/estop_reset",
-        "std_srvs/srv/Trigger",
-        "{}",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
     try:
         stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=15.0)
     except TimeoutError:
         proc.kill()
         await proc.wait()
+        from openral_observability.dashboard.cricket_session import (
+            CRICKET_DISCONNECTED_MSG,
+            on_cricket_host,
+        )
+
+        if not on_cricket_host():
+            return JSONResponse({"error": CRICKET_DISCONNECTED_MSG}, status_code=503)
         return JSONResponse(
             {"error": "estop_reset timed out after 15 s — is the safety kernel running?"},
             status_code=504,
@@ -391,26 +397,28 @@ async def _publish_estop_cleared() -> None:
     the kernel reset has already succeeded by the time we get here, so a failed
     broadcast must not turn a successful reset into an error response.
     """
-    ros2 = shutil.which("ros2")
-    if ros2 is None:
-        return
+    from openral_observability.dashboard.cricket_session import spawn_ros2
+
     with contextlib.suppress(Exception):
-        proc = await asyncio.create_subprocess_exec(
-            ros2,
-            "topic",
-            "pub",
-            "-w",
-            "1",
-            "--times",
-            "3",
-            "--rate",
-            "10",
-            "/openral/estop_cleared",
-            "std_msgs/msg/Empty",
-            "{}",
+        proc, ros2_err = await spawn_ros2(
+            [
+                "topic",
+                "pub",
+                "-w",
+                "1",
+                "--times",
+                "3",
+                "--rate",
+                "10",
+                "/openral/estop_cleared",
+                "std_msgs/msg/Empty",
+                "{}",
+            ],
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
+        if ros2_err is not None or proc is None:
+            return
         await asyncio.wait_for(proc.communicate(), timeout=10.0)
 
 
@@ -424,32 +432,34 @@ async def _estop_trigger_response() -> JSONResponse:
     publisher must first discover the subscribers; e-stop is idempotent (a
     latch), so repeats are harmless and this beats the discovery race.
     """
-    ros2 = shutil.which("ros2")
-    if ros2 is None:
+    from openral_observability.dashboard.cricket_session import spawn_ros2
+
+    proc, ros2_err = await spawn_ros2(
+        [
+            "topic",
+            "pub",
+            # CRITICAL: a fresh publisher must WAIT for the subscribers to be
+            # discovered before publishing, or the e-stop message is silently lost
+            # to the discovery race and the robot never stops (observed live). -w 1
+            # blocks until >=1 of the HAL/kernel/runner subscriptions is matched.
+            "-w",
+            "1",
+            "--times",
+            "3",
+            "--rate",
+            "10",
+            "/openral/estop",
+            "std_msgs/msg/Empty",
+            "{}",
+        ]
+    )
+    if ros2_err is not None or proc is None:
+        from openral_observability.dashboard.cricket_session import CRICKET_DISCONNECTED_MSG
+
         return JSONResponse(
-            {"error": "`ros2` not on PATH; source the workspace install first"},
+            {"error": ros2_err or CRICKET_DISCONNECTED_MSG},
             status_code=503,
         )
-    proc = await asyncio.create_subprocess_exec(
-        ros2,
-        "topic",
-        "pub",
-        # CRITICAL: a fresh publisher must WAIT for the subscribers to be
-        # discovered before publishing, or the e-stop message is silently lost
-        # to the discovery race and the robot never stops (observed live). -w 1
-        # blocks until >=1 of the HAL/kernel/runner subscriptions is matched.
-        "-w",
-        "1",
-        "--times",
-        "3",
-        "--rate",
-        "10",
-        "/openral/estop",
-        "std_msgs/msg/Empty",
-        "{}",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
     try:
         _stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=10.0)
     except TimeoutError:
@@ -471,6 +481,35 @@ async def _estop_trigger_response() -> JSONResponse:
     return JSONResponse({"status": "ok", "accepted": True}, status_code=200)
 
 
+def _qpos_response(store: TelemetryStore) -> Response:
+    """Slim ``GET /api/qpos`` body for the laptop kinematic viewer.
+
+    204 until the first ``hal.read_state`` span carrying ``openral.hal.qpos``
+    lands — a WAITING dashboard has no pose, not a missing route. Age is
+    dashboard-host clock minus ingest ``ts_unix`` (same contract as the
+    connection pill).
+    """
+    frame = store.qpos_frame()
+    if frame is None:
+        return Response(status_code=204)
+    stamp = frame.get("stamp_unix")
+    age_ms = None
+    if isinstance(stamp, (int, float)):
+        age_ms = round((time.time() - float(stamp)) * 1000.0, 1)
+    robot_id = frame.get("robot_id") or os.environ.get("OPENRAL_ROBOT_ID", "").strip() or None
+    return JSONResponse(
+        {
+            "qpos": frame["qpos"],
+            "nq": frame["nq"],
+            "robot_id": robot_id,
+            "stamp_unix": stamp,
+            "age_ms": age_ms,
+            "fallen": bool(frame.get("fallen")),
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 def _config_response() -> JSONResponse:
     """Dashboard-level config (Jaeger UI url, write-controls flag, …) sourced from env.
 
@@ -490,6 +529,10 @@ def _config_response() -> JSONResponse:
     )
 
     robot_id = os.environ.get("OPENRAL_ROBOT_ID", "").strip()
+    if not robot_id:
+        from openral_observability.dashboard.cricket_session import cricket_live_robot_id
+
+        robot_id = cricket_live_robot_id()
     write_on = _write_controls_enabled()
     cricket: dict[str, Any] | None = None
     if write_on:
@@ -607,7 +650,8 @@ async def _skill_execute_response(
       ``OPENRAL_DASHBOARD_SKILL_ACCEPT_TIMEOUT_S`` seconds (default 12).
     - Returns **HTTP 502** if the subprocess exits before printing any
       acceptance line.
-    - Returns **HTTP 503** if ``ros2`` is not on PATH.
+    - Returns **HTTP 503** if cricket is disconnected (laptop) or
+      ``ros2`` is not on PATH (cricket host).
 
     On 202 a background ``asyncio.Task`` drains the remaining stdout, awaits
     process exit, and audit-logs the eventual outcome. The task reference is
@@ -617,12 +661,10 @@ async def _skill_execute_response(
     Every call is audit-logged at WARNING level before the subprocess is
     spawned. ``prompt`` and ``goal_params_json`` are never logged.
     """
-    ros2 = shutil.which("ros2")
-    if ros2 is None:
-        return JSONResponse(
-            {"error": "`ros2` not on PATH; source the workspace install first"},
-            status_code=503,
-        )
+    from openral_observability.dashboard.cricket_session import (
+        CRICKET_DISCONNECTED_MSG,
+        spawn_ros2,
+    )
 
     accept_timeout = float(
         os.environ.get(
@@ -649,16 +691,21 @@ async def _skill_execute_response(
         operator_ip=operator_ip,
     )
 
-    proc = await asyncio.create_subprocess_exec(
-        ros2,
-        "action",
-        "send_goal",
-        "/openral/execute_rskill",
-        "openral_msgs/action/ExecuteRskill",
-        goal,
-        stdout=asyncio.subprocess.PIPE,
+    proc, ros2_err = await spawn_ros2(
+        [
+            "action",
+            "send_goal",
+            "/openral/execute_rskill",
+            "openral_msgs/action/ExecuteRskill",
+            goal,
+        ],
         stderr=asyncio.subprocess.STDOUT,
     )
+    if ros2_err is not None or proc is None:
+        return JSONResponse(
+            {"error": ros2_err or CRICKET_DISCONNECTED_MSG},
+            status_code=503,
+        )
     # Capture stdout narrowed to StreamReader — PIPE was requested so it is always set.
     if proc.stdout is None:  # pragma: no branch
         raise RuntimeError("stdout is None despite asyncio.subprocess.PIPE request")
@@ -672,6 +719,10 @@ async def _skill_execute_response(
     except TimeoutError:
         proc.kill()
         await proc.wait()
+        from openral_observability.dashboard.cricket_session import on_cricket_host
+
+        if not on_cricket_host():
+            return JSONResponse({"error": CRICKET_DISCONNECTED_MSG}, status_code=503)
         return JSONResponse(
             {
                 "error": (
@@ -814,12 +865,11 @@ async def _param_set_response(node: str, name: str, value: str, operator_ip: str
             },
             status_code=403,
         )
-    ros2 = shutil.which("ros2")
-    if ros2 is None:
-        return JSONResponse(
-            {"error": "`ros2` not on PATH; source the workspace install first"},
-            status_code=503,
-        )
+    from openral_observability.dashboard.cricket_session import (
+        CRICKET_DISCONNECTED_MSG,
+        spawn_ros2,
+    )
+
     _logger.warning(
         "dashboard_write_attempt",
         operation="param_set",
@@ -829,16 +879,12 @@ async def _param_set_response(node: str, name: str, value: str, operator_ip: str
         name=name,
         value=value,
     )
-    proc = await asyncio.create_subprocess_exec(
-        ros2,
-        "param",
-        "set",
-        node,
-        name,
-        value,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    proc, ros2_err = await spawn_ros2(["param", "set", node, name, value])
+    if ros2_err is not None or proc is None:
+        return JSONResponse(
+            {"error": ros2_err or CRICKET_DISCONNECTED_MSG},
+            status_code=503,
+        )
     try:
         out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=10.0)
     except TimeoutError:
@@ -910,6 +956,7 @@ def create_app(store: TelemetryStore | None = None) -> FastAPI:  # noqa: PLR0915
     # /openral/perception/objects overlay subscriber (set by run_dashboard).
     # None without ROS; the camera tiles then simply carry no overlays.
     app.state.perception_overlay = None
+    app.state.acquire_client = client_from_env()
 
     @app.middleware("http")
     async def cricket_idle_touch(  # pyright: ignore[reportUnusedFunction]
@@ -989,7 +1036,13 @@ def create_app(store: TelemetryStore | None = None) -> FastAPI:  # noqa: PLR0915
 
     @app.get("/api/state")
     async def get_state(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
-        return JSONResponse(request.app.state.store.snapshot())
+        return await _state_response(request.app.state.store)
+
+    @app.get("/api/qpos")
+    async def get_qpos(request: Request) -> Response:  # pyright: ignore[reportUnusedFunction]
+        # Slim pose stream for ``openral viz mujoco``. Body lives in
+        # ``_qpos_response`` so create_app stays under the statement cap.
+        return _qpos_response(request.app.state.store)
 
     @app.get("/api/stream")
     async def get_stream(request: Request) -> StreamingResponse:  # pyright: ignore[reportUnusedFunction]
@@ -1011,19 +1064,20 @@ def create_app(store: TelemetryStore | None = None) -> FastAPI:  # noqa: PLR0915
         # page can open the stream while WAITING; 404 only for a name that is
         # not a hero slot and has never been ingested. A laptop dashboard with
         # no local OTLP proxies cricket's tunneled dashboard (:14318).
-        cameras = (
-            request.app.state.store.snapshot()
-            .get("topics", {})
-            .get("perception", {})
-            .get("cameras", {})
-        )
-        if source not in cameras and source not in HERO_CAMERA_KEYS:
+        if not _camera_source_allowed(request.app.state.store, source):
             return JSONResponse({"error": f"unknown camera source {source!r}"}, status_code=404)
         return StreamingResponse(
             _mjpeg_stream(request, source),
             media_type=f"multipart/x-mixed-replace; boundary={_MJPEG_BOUNDARY}",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    @app.get("/api/camera/{source}/latest.jpg")
+    async def get_camera_latest(  # pyright: ignore[reportUnusedFunction]
+        source: str, request: Request
+    ) -> Response:
+        """One JPEG so tiles can paint when MJPEG never commits a frame."""
+        return await _latest_jpeg_response(request.app.state.store, source)
 
     @app.get("/api/robots")
     async def get_robots(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
@@ -1062,6 +1116,13 @@ def create_app(store: TelemetryStore | None = None) -> FastAPI:  # noqa: PLR0915
                 {"error": "field 'text' required (non-empty string)"}, status_code=400
             )
         return await _prompt_response(text)
+
+    @app.post("/api/chat")
+    async def post_chat(request: Request) -> Response:  # pyright: ignore[reportUnusedFunction]
+        # /simple Go2 chat sidebar. Acquire probe/ask; no reasoner publish.
+        from openral_observability.dashboard.chat import chat_response
+
+        return await chat_response(request, request.app.state.store)
 
     @app.post("/api/transcribe")
     async def post_transcribe(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
@@ -1114,23 +1175,32 @@ def create_app(store: TelemetryStore | None = None) -> FastAPI:  # noqa: PLR0915
         return await _skill_execute_from_request(request)
 
     @app.post("/api/demo/stand")
-    async def post_demo_stand() -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+    async def post_demo_stand(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
         from openral_observability.dashboard.demo_controls import stand_response
 
-        return await stand_response(origin=True)
+        return await stand_response(
+            origin=True,
+            estop=getattr(request.app.state, "estop", None),
+        )
 
     @app.post("/api/demo/recalibrate")
-    async def post_demo_recalibrate() -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+    async def post_demo_recalibrate(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
         from openral_observability.dashboard.demo_controls import stand_response
 
         # Same upright snap; named separately so the UI can say "recalibrate".
-        return await stand_response(origin=True)
+        # Must pass EstopPublisher so /openral/estop_cleared reaches the
+        # skill runner (shell-out pub can leave Apply rejecting goals).
+        return await stand_response(
+            origin=True,
+            estop=getattr(request.app.state, "estop", None),
+        )
 
     @app.post("/api/demo/walk")
     async def post_demo_walk(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
         from openral_observability.dashboard.demo_controls import walk_response
 
         skill_id = ""
+        velocity_commands: list[float] | None = None
         content_type = request.headers.get("content-type", "")
         if content_type.startswith("application/json"):
             try:
@@ -1139,7 +1209,8 @@ def create_app(store: TelemetryStore | None = None) -> FastAPI:  # noqa: PLR0915
                 payload = {}
             if isinstance(payload, dict):
                 skill_id = str(payload.get("skill_id") or "").strip()
-        return await walk_response(skill_id=skill_id)
+                velocity_commands = _joystick_from_body(payload.get("velocity_commands"))
+        return await walk_response(skill_id=skill_id, velocity_commands=velocity_commands)
 
     @app.post("/api/demo/stop")
     async def post_demo_stop() -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
@@ -1195,9 +1266,17 @@ def create_app(store: TelemetryStore | None = None) -> FastAPI:  # noqa: PLR0915
     async def healthz() -> dict[str, str]:  # pyright: ignore[reportUnusedFunction]
         return {"status": "ok"}
 
+    def _simple_page() -> FileResponse:
+        return FileResponse(_STATIC_DIR / "simple-ui" / "index.html")
+
     @app.get("/")
-    async def index() -> FileResponse:  # pyright: ignore[reportUnusedFunction]
-        return FileResponse(_STATIC_DIR / "index.html")
+    async def index() -> RedirectResponse:  # pyright: ignore[reportUnusedFunction]
+        # Classic root dashboard must not start. /simple is the only UI.
+        return RedirectResponse(url="/simple", status_code=307)
+
+    @app.get("/simple")
+    async def simple() -> FileResponse:  # pyright: ignore[reportUnusedFunction]
+        return _simple_page()
 
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
@@ -1241,6 +1320,19 @@ def cricket_camera_stream_url(source: str) -> str | None:
     laptop tiles follow that stream so this page shows the same two cameras.
     Never returned when this process *is* cricket, or the proxy would loop.
     """
+    return _cricket_camera_url(source, "stream")
+
+
+def cricket_camera_latest_url(source: str) -> str | None:
+    """Still-JPEG URL on the tunneled cricket dashboard, or ``None`` on cricket.
+
+    Cricket graphs started before ``/latest.jpg`` existed 404 this path;
+    the laptop still falls back to cricket ``/api/state`` thumbs.
+    """
+    return _cricket_camera_url(source, "latest.jpg")
+
+
+def _cricket_camera_url(source: str, suffix: str) -> str | None:
     from openral_observability.dashboard.cricket_session import (
         cricket_dashboard_local_port,
         on_cricket_host,
@@ -1249,7 +1341,90 @@ def cricket_camera_stream_url(source: str) -> str | None:
     if on_cricket_host():
         return None
     port = cricket_dashboard_local_port()
-    return f"http://127.0.0.1:{port}/api/camera/{quote(source, safe='')}/stream"
+    return f"http://127.0.0.1:{port}/api/camera/{quote(source, safe='')}/{suffix}"
+
+
+def _view_snapshot(store: TelemetryStore, include_camera_thumbs: bool) -> dict[str, Any]:
+    """Local snapshot, plus cricket ingest when this collector is empty."""
+    return _view_snapshot_payload(
+        store.snapshot(include_camera_thumbs=include_camera_thumbs),
+        include_camera_thumbs=include_camera_thumbs,
+    )
+
+
+def _view_snapshot_payload(
+    payload: dict[str, Any], *, include_camera_thumbs: bool = False
+) -> dict[str, Any]:
+    if payload.get("last_ingest_ts"):
+        return payload
+    from openral_observability.dashboard.cricket_session import overlay_cricket_ingest
+
+    return overlay_cricket_ingest(payload, include_camera_thumbs=include_camera_thumbs)
+
+
+async def _state_response(store: TelemetryStore) -> JSONResponse:
+    payload = await asyncio.to_thread(_view_snapshot, store, True)
+    return JSONResponse(payload)
+
+
+async def _latest_jpeg_response(store: TelemetryStore, source: str) -> Response:
+    if not _camera_source_allowed(store, source):
+        return JSONResponse({"error": f"unknown camera source {source!r}"}, status_code=404)
+    thumb = _camera_thumb(store, source)
+    if thumb is not None:
+        try:
+            return Response(
+                content=base64.b64decode(thumb, validate=True),
+                media_type="image/jpeg",
+                headers={"Cache-Control": "no-store"},
+            )
+        except binascii.Error:
+            pass
+    proxied = await _proxied_cricket_latest_jpeg(source)
+    if proxied is None:
+        return Response(status_code=204)
+    return Response(
+        content=proxied,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+async def _proxied_cricket_latest_jpeg(source: str) -> bytes | None:
+    """Laptop still: tunneled ``/api/state`` thumb first, then ``/latest.jpg``.
+
+    Old cricket dashboards 404 ``/latest.jpg``. Hitting that URL first
+    added 1-2 s of fail before the thumb that was already cached.
+    """
+    still = await asyncio.to_thread(_cricket_state_thumb_jpeg, source)
+    if still:
+        return still
+    url = cricket_camera_latest_url(source)
+    if url is None:
+        return None
+    timeout = httpx.Timeout(connect=1.5, read=2.0, write=2.0, pool=1.5)
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            resp = await client.get(url)
+        if resp.status_code == http.HTTPStatus.OK and resp.content:
+            return resp.content
+    except (httpx.HTTPError, OSError, TimeoutError):
+        return None
+    return None
+
+
+def _cricket_state_thumb_jpeg(source: str) -> bytes | None:
+    from openral_observability.dashboard.cricket_session import (
+        cricket_tunneled_camera_thumb_b64,
+    )
+
+    b64 = cricket_tunneled_camera_thumb_b64(source)
+    if b64 is None:
+        return None
+    try:
+        return base64.b64decode(b64, validate=True)
+    except binascii.Error:
+        return None
 
 
 async def _iter_upstream_mjpeg(url: str) -> AsyncIterator[bytes]:
@@ -1269,14 +1444,50 @@ async def _iter_upstream_mjpeg(url: str) -> AsyncIterator[bytes]:
         return
 
 
+def _camera_source_allowed(store: TelemetryStore, source: str) -> bool:
+    """Whether ``/api/camera/{source}`` may 200, without cloning the snapshot.
+
+    Hero Go2 slots are always known so WAITING can open the stream. Any
+    other name must already have an ingested camera row.
+    """
+    return source in HERO_CAMERA_KEYS or store.camera_known(source)
+
+
 def _camera_thumb(store: TelemetryStore, source: str) -> str | None:
     """Return the latest base64 JPEG thumbnail for ``source``, or ``None``."""
-    cameras = store.snapshot().get("topics", {}).get("perception", {}).get("cameras", {})
-    entry = cameras.get(source)
-    if not isinstance(entry, dict):
-        return None
-    thumb = entry.get("thumbnail_jpeg_b64")
-    return thumb if isinstance(thumb, str) and thumb else None
+    return store.camera_thumb(source)
+
+
+def _mjpeg_should_emit(
+    thumb: str | None, last: str | None, *, elapsed_s: float
+) -> bool:
+    """Whether to push a multipart part: bytes changed, or heartbeat elapsed.
+
+    Example:
+        >>> _mjpeg_should_emit("a", None, elapsed_s=0.0)
+        True
+        >>> _mjpeg_should_emit("a", "a", elapsed_s=0.0)
+        False
+        >>> _mjpeg_should_emit("a", "a", elapsed_s=_MJPEG_HEARTBEAT_S)
+        True
+        >>> _mjpeg_should_emit("b", "a", elapsed_s=0.0)
+        True
+        >>> _mjpeg_should_emit(None, "a", elapsed_s=1.0)
+        False
+    """
+    if thumb is None:
+        return False
+    if thumb != last:
+        return True
+    return elapsed_s >= _MJPEG_HEARTBEAT_S
+
+
+def _mjpeg_part_bytes(jpeg: bytes) -> bytes:
+    """Frame raw JPEG bytes as a multipart/x-mixed-replace part."""
+    head = (
+        f"--{_MJPEG_BOUNDARY}\r\nContent-Type: image/jpeg\r\nContent-Length: {len(jpeg)}\r\n\r\n"
+    ).encode("ascii")
+    return head + jpeg + b"\r\n"
 
 
 def _mjpeg_part(thumb_b64: str) -> bytes:
@@ -1285,60 +1496,79 @@ def _mjpeg_part(thumb_b64: str) -> bytes:
     Raises:
         binascii.Error: ``thumb_b64`` is not valid base64.
     """
-    jpeg = base64.b64decode(thumb_b64, validate=True)
-    head = (
-        f"--{_MJPEG_BOUNDARY}\r\nContent-Type: image/jpeg\r\nContent-Length: {len(jpeg)}\r\n\r\n"
-    ).encode("ascii")
-    return head + jpeg + b"\r\n"
+    return _mjpeg_part_bytes(base64.b64decode(thumb_b64, validate=True))
 
 
-async def _mjpeg_stream(  # noqa: PLR0912  # reason: local-thumb vs cricket-proxy wait loop
+async def _mjpeg_follow_cricket(
     request: Request, source: str
 ) -> AsyncIterator[bytes]:
-    """Push the store's latest thumbnail for ``source`` as it changes.
+    """Laptop empty-collector path: seed a still, then splice cricket MJPEG.
+
+    Cricket MJPEG TTFB is often >1 s over the tunnel. The first ``--frame``
+    from the cached ``/api/state`` thumb lets ``<img>`` paint immediately.
+    When the upstream stream drops, keep emitting that still so the browser
+    does not fire ``error`` and freeze the tile on **no signal**.
+    """
+    seeded = await asyncio.to_thread(_cricket_state_thumb_jpeg, source)
+    if seeded:
+        yield _mjpeg_part_bytes(seeded)
+    upstream = cricket_camera_stream_url(source)
+    while True:
+        if await request.is_disconnected():
+            return
+        proxied = False
+        if upstream is not None:
+            async for chunk in _iter_upstream_mjpeg(upstream):
+                proxied = True
+                if await request.is_disconnected():
+                    return
+                yield chunk
+        if not proxied:
+            still = await asyncio.to_thread(_cricket_state_thumb_jpeg, source)
+            if still:
+                yield _mjpeg_part_bytes(still)
+        await asyncio.sleep(_MJPEG_HEARTBEAT_S)
+
+
+async def _mjpeg_stream(request: Request, source: str) -> AsyncIterator[bytes]:
+    """Push the store's latest thumbnail for ``source`` as MJPEG.
 
     Subscribes to the store (same primitive as the SSE stream), emits the
     current frame immediately, then a new multipart part on each *changed*
-    thumbnail. When this laptop collector has no local thumb, follow the
-    tunneled cricket dashboard MJPEG so the operator looking at ``:4318``
-    still sees the two cameras. MJPEG has no keepalive frame, so on idle we
-    just re-check client disconnect. Always unsubscribes on exit.
+    thumbnail **and** on a :data:`_MJPEG_HEARTBEAT_S` timer. The heartbeat
+    is load-bearing: browsers commit a ``multipart/x-mixed-replace`` part
+    only when the next ``--boundary`` arrives, so a standing robot with
+    identical JPEGs would otherwise send one part and leave the tiles black.
+    When this laptop collector has no local thumb, seed one JPEG from the
+    tunneled cricket ``/api/state`` thumb and then follow cricket MJPEG so
+    ``:4318`` paints immediately. Always unsubscribes on exit.
     """
     store: TelemetryStore = request.app.state.store
     queue = store.subscribe()
     last: str | None = None
+    last_emit = 0.0
+    loop = asyncio.get_running_loop()
     try:
         while True:
             if await request.is_disconnected():
                 return
             thumb = _camera_thumb(store, source)
-            if thumb is not None:
-                if thumb != last:
-                    try:
-                        part = _mjpeg_part(thumb)
-                    except binascii.Error:
-                        _logger.warning("dashboard.mjpeg_decode_failed", source=source)
-                    else:
-                        last = thumb
-                        yield part
-                try:
-                    await asyncio.wait_for(queue.get(), timeout=15.0)
-                except TimeoutError:
-                    continue
-                continue
-            upstream = cricket_camera_stream_url(source)
-            proxied = False
-            if upstream is not None:
-                async for chunk in _iter_upstream_mjpeg(upstream):
-                    proxied = True
-                    if await request.is_disconnected():
-                        return
+            if thumb is None:
+                async for chunk in _mjpeg_follow_cricket(request, source):
                     yield chunk
-            if proxied:
-                await asyncio.sleep(1.0)
-                continue
+                return
+            now = loop.time()
+            if _mjpeg_should_emit(thumb, last, elapsed_s=now - last_emit):
+                try:
+                    part = _mjpeg_part(thumb)
+                except binascii.Error:
+                    _logger.warning("dashboard.mjpeg_decode_failed", source=source)
+                else:
+                    last = thumb
+                    last_emit = now
+                    yield part
             try:
-                await asyncio.wait_for(queue.get(), timeout=2.0)
+                await asyncio.wait_for(queue.get(), timeout=_MJPEG_HEARTBEAT_S)
             except TimeoutError:
                 continue
     finally:
@@ -1356,7 +1586,7 @@ async def _sse_stream(request: Request) -> AsyncIterator[bytes]:
     store: TelemetryStore = request.app.state.store
     queue = store.subscribe()
     try:
-        yield _sse_frame(store.snapshot(include_camera_thumbs=False))
+        yield _sse_frame(await asyncio.to_thread(_view_snapshot, store, False))
         while True:
             if await request.is_disconnected():
                 return
@@ -1365,7 +1595,7 @@ async def _sse_stream(request: Request) -> AsyncIterator[bytes]:
             except TimeoutError:
                 yield b": keepalive\n\n"
                 continue
-            yield _sse_frame(payload)
+            yield _sse_frame(_view_snapshot_payload(payload))
     finally:
         store.unsubscribe(queue)
 

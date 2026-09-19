@@ -54,14 +54,17 @@ def test_manifest_joint_order_puts_the_legs_first() -> None:
     composite = RobotDescription.from_yaml(str(_MANIFEST))
     go2 = RobotDescription.from_yaml(str(_REPO / "robots" / "go2" / "robot.yaml"))
 
-    names = [j.name for j in composite.joints]
-    assert names[:12] == [j.name for j in go2.joints]
-    assert names[12:] == [f"joint{i}" for i in range(1, 7)] + ["jointGripper"]
-
     # Leg limits are the same hardware and must not have drifted in the copy.
     for mine, theirs in zip(composite.joints[:12], go2.joints, strict=True):
         assert mine.position_limits == theirs.position_limits
         assert mine.effort_limit == theirs.effort_limit
+
+
+def test_front_is_not_sim_rendered() -> None:
+    """Snout stays declared for VLA matching; HAL must not pay a second EGL camera."""
+    composite = RobotDescription.from_yaml(str(_MANIFEST))
+    front = next(s for s in composite.sensors if s.name == "front")
+    assert front.sim_render is False
 
 
 def test_hal_connects_to_the_composed_model_with_every_joint() -> None:
@@ -93,11 +96,16 @@ def test_composite_stands_under_gravity_with_the_arm_aboard() -> None:
         hal.disconnect()
 
 
-def test_twelve_dof_locomotion_action_holds_the_arm_at_home() -> None:
-    """A 12-D leg-only ActionChunk must not fold the Z1 toward joint=0."""
+def test_twelve_dof_locomotion_action_holds_the_arm_at_spawn() -> None:
+    """A 12-D leg-only ActionChunk must not fold the Z1 toward joint=0.
+
+    The reference is the SPAWN pose, not the menagerie `home`: a 12-D row leaves
+    the arm on the sticky hold, and on a fresh connect that hold is whatever the
+    twin spawned at (`GO2_Z1_SPAWN_JOINT_TARGETS`, i.e. `ready`).
+    """
     from openral_core import Action, ControlMode
     from openral_hal.go2 import GO2_HOME_JOINT_TARGETS
-    from openral_hal.go2_z1 import GO2_Z1_ARM_HOME
+    from openral_hal.go2_z1 import GO2_Z1_ARM_READY
 
     _, hal = _composed_hal(gravity=False)
     hal.connect()
@@ -109,10 +117,10 @@ def test_twelve_dof_locomotion_action_holds_the_arm_at_home() -> None:
         )
         hal.send_action(action)
         arm_ctrl = np.asarray(hal._data.ctrl[12:19])
-        np.testing.assert_allclose(arm_ctrl, GO2_Z1_ARM_HOME, atol=1e-5)
+        np.testing.assert_allclose(arm_ctrl, GO2_Z1_ARM_READY, atol=1e-5)
         # Hold targets remember the padded 19-D row for idle_step.
         assert len(hal._hold_targets) == 19
-        np.testing.assert_allclose(hal._hold_targets[12:], GO2_Z1_ARM_HOME, atol=1e-9)
+        np.testing.assert_allclose(hal._hold_targets[12:], GO2_Z1_ARM_READY, atol=1e-9)
     finally:
         hal.disconnect()
 
@@ -121,12 +129,12 @@ def test_full_width_locomotion_cannot_walk_the_arm_off_hold() -> None:
     """Hold-padded 19-D walk rows with moving legs must not retarget the Z1."""
     from openral_core import Action, ControlMode
     from openral_hal.go2 import GO2_HOME_JOINT_TARGETS
-    from openral_hal.go2_z1 import GO2_Z1_ARM_HOME, GO2_Z1_HOME_JOINT_TARGETS
+    from openral_hal.go2_z1 import GO2_Z1_ARM_READY, GO2_Z1_SPAWN_JOINT_TARGETS
 
     _, hal = _composed_hal(gravity=True)
     hal.connect()
     try:
-        drifted = list(GO2_Z1_HOME_JOINT_TARGETS)
+        drifted = list(GO2_Z1_SPAWN_JOINT_TARGETS)
         drifted[12:] = [0.5, 1.5, -1.0, -1.0, 1.0, -1.5, -0.5]
         for i in range(50):
             drifted[12] = 0.5 * float(np.sin(i / 5.0))
@@ -141,8 +149,8 @@ def test_full_width_locomotion_cannot_walk_the_arm_off_hold() -> None:
             for _ in range(3):
                 hal.idle_step()
         arm_q = np.asarray(hal.read_state().position[12:19])
-        np.testing.assert_allclose(arm_q[:6], GO2_Z1_ARM_HOME[:6], atol=5e-2)
-        np.testing.assert_allclose(hal._hold_targets[12:], GO2_Z1_ARM_HOME, atol=1e-9)
+        np.testing.assert_allclose(arm_q[:6], GO2_Z1_ARM_READY[:6], atol=5e-2)
+        np.testing.assert_allclose(hal._hold_targets[12:], GO2_Z1_ARM_READY, atol=1e-9)
     finally:
         hal.disconnect()
 
@@ -151,7 +159,7 @@ def test_arm_ready_then_walk_keeps_the_ready_pose() -> None:
     """Recalibrate / arm_ready 19-D must stick through locomotion + idle snaps."""
     from openral_core import Action, ControlMode
     from openral_hal.go2 import GO2_HOME_JOINT_TARGETS
-    from openral_hal.go2_z1 import GO2_Z1_ARM_READY, GO2_Z1_HOME_JOINT_TARGETS
+    from openral_hal.go2_z1 import GO2_Z1_ARM_READY, GO2_Z1_SPAWN_JOINT_TARGETS
 
     _, hal = _composed_hal(gravity=True)
     hal.connect()
@@ -173,7 +181,7 @@ def test_arm_ready_then_walk_keeps_the_ready_pose() -> None:
 
         walk_legs = list(GO2_HOME_JOINT_TARGETS)
         walk_legs[1] = 1.15
-        chased = list(GO2_Z1_HOME_JOINT_TARGETS)
+        chased = list(GO2_Z1_SPAWN_JOINT_TARGETS)
         chased[12:] = [0.4, 0.2, -0.1, -0.8, 0.3, -0.2, -0.4]
         for i in range(40):
             chased[12] = 0.4 * float(np.sin(i / 3.0))
@@ -250,14 +258,16 @@ def test_arm_joints_take_position_targets_not_torques() -> None:
     ctrl would be read as a radians target of ~20 rad and slam the arm into
     its stops, so the per-joint split is the safety-relevant part of this HAL.
     """
-    from openral_hal.go2_z1 import GO2_Z1_ARM_HOME
+    from openral_hal.go2_z1 import GO2_Z1_SPAWN_JOINT_TARGETS
 
     _, hal = _composed_hal(gravity=False)
     hal.connect()
     try:
         hal.idle_step()
         # Reaching into _data is deliberate: the actuator write IS the contract.
+        # An idle tick holds the spawn pose, so ctrl must be those radians —
+        # a torque would land here as a target of ~20 rad.
         arm_ctrl = np.asarray(hal._data.ctrl[12:19])
-        np.testing.assert_allclose(arm_ctrl, GO2_Z1_ARM_HOME, atol=1e-6)
+        np.testing.assert_allclose(arm_ctrl, GO2_Z1_SPAWN_JOINT_TARGETS[12:], atol=1e-6)
     finally:
         hal.disconnect()

@@ -12,8 +12,8 @@ so it falls over under gravity. Closed-loop tests and the ``go2_bench``
 deploy scene run with ``gravity_enabled=False``. The suite validates the
 12-DoF joint-position action layout, lifecycle wiring
 (``connect → read_state → send_action → estop``), joint indexing,
-``RobotDescription`` round-trip, and the spliced front + third-person
-RGB cameras
+``RobotDescription`` round-trip, the declared (not rendered) front
+camera, and the spliced third-person ``top`` RGB camera
 (CLAUDE.md §1.11). Walking, balance, and a real-HW ``unitree_sdk2``
 adapter are follow-ups — same posture as H1 (no S0 cerebellum) and G1
 before ADR-0089.
@@ -80,6 +80,9 @@ from openral_hal._mujoco_arm import _IDLE_STEP_CAP, MujocoArmHAL
 __all__ = [
     "GO2_DESCRIPTION",
     "GO2_HOME_JOINT_TARGETS",
+    "GO2_HOP_JOINT_TARGETS",
+    "GO2_HOP_PD_KP",
+    "GO2_HOP_PD_KV",
     "GO2_HUB_DEFAULT_JOINT_POS",
     "GO2_HUB_PD_DAMPING",
     "GO2_HUB_PD_STIFFNESS",
@@ -120,6 +123,34 @@ GO2_HUB_DEFAULT_JOINT_POS: tuple[float, ...] = (
 # first (free-joint height); ``Go2MujocoHAL.connect`` then snaps actuated qpos
 # here. Empty in-tree ACM (`robots/go2`) should use this rest when lowering lands.
 GO2_HOME_JOINT_TARGETS: tuple[float, ...] = GO2_HUB_DEFAULT_JOINT_POS
+
+# mjlab hop stand (Renkunzhao/legged_rl_deploy policies/go2/mjlab/hop).
+# Front thighs 0.8, rear 1.0, calves -1.5; hip signs are the opposite of Hub.
+# Drift-guarded against rskills/rsl-rl-onnx-go2-hop-flat starting_pose /
+# params/deploy.yaml default_joint_pos and the scripted hop land pose.
+# Apply hop ResetToPose sends this 12-D row; pinning Hub z under it
+# buries the feet (~5 cm). Walk PD stays — Isaac hop kp=20 sags calves.
+GO2_HOP_JOINT_TARGETS: tuple[float, ...] = (
+    0.1,
+    0.8,
+    -1.5,
+    -0.1,
+    0.8,
+    -1.5,
+    0.1,
+    1.0,
+    -1.5,
+    -0.1,
+    1.0,
+    -1.5,
+)
+# Upstream hop YAML stiffness/damping (all joints). Not applied by the HAL.
+# Recorded so the hop deploy.yaml pin stays honest. Isaac implicit PD
+# ``kp=20`` is too soft on these torque motors (calves sag past command).
+GO2_HOP_PD_KP: float = 20.0
+GO2_HOP_PD_KV: float = 0.5
+# Menagerie Go2 foot collision spheres (also kept on the go2_z1 compose).
+_GO2_FOOT_GEOMS: tuple[str, ...] = ("FL", "FR", "RL", "RR")
 
 
 # ── Joint limits ─────────────────────────────────────────────────────────────
@@ -252,6 +283,7 @@ GO2_DESCRIPTION = RobotDescription(
             ),
             encoding="rgb8",
             vla_feature_key="observation.images.front",
+            sim_render=False,
             sim_placement=CameraSimPlacement(
                 parent_body="base",
                 pos=_GO2_FRONT_CAMERA_POS,
@@ -407,16 +439,18 @@ class Go2MujocoHAL(MujocoArmHAL):
         self._stand_base_z: float = 0.30
 
     def connect(self) -> None:
-        """Load the MJCF, then snap actuated joints to Hub ``default_joint_pos``.
+        """Load the MJCF, snap Hub stand, then sit the feet on z=0.
 
-        Menagerie keyframe 0 still supplies the free-joint height / orientation.
-        Hips are then written to Hub ±0.1 so spawn matches the rsl-rl rest used
-        by ``params/deploy.yaml`` (menagerie home hips are 0.0).
+        Menagerie keyframe 0 still supplies the free-joint orientation.
+        Hips are written to Hub ±0.1 so spawn matches the rsl-rl rest used
+        by ``params/deploy.yaml`` (menagerie home hips are 0.0). The keyframe
+        z is for menagerie home joints, not Hub — keeping it after the joint
+        snap puts the feet through the floor (~2.6 cm). Drop to contact so
+        Recalibrate / hop ``ResetToPose`` start from a planted stand.
         """
         super().connect()
         self._snap_actuated_home()
-        assert self._data is not None
-        self._stand_base_z = float(self._data.qpos[2])
+        self._snap_base_upright(origin=True)
 
     def _snap_actuated_home(self) -> None:
         """Write :data:`GO2_HOME_JOINT_TARGETS` into actuated qpos and PD-hold."""
@@ -444,30 +478,66 @@ class Go2MujocoHAL(MujocoArmHAL):
         super().send_action(action)
 
     def reset_to_pose(self, pose: list[float], *, origin: bool = False) -> None:
-        """Snap qpos, then PD-hold ``pose`` and upright the free base.
+        """Snap qpos, sit the feet on the ground, and keep walk PD.
 
         ``origin`` is accepted for API parity with call sites that pass it;
         the Go2 twin always recentres xy on tip recovery so Stand from the
         dashboard does not leave the dog on its side across the floor.
+
+        Walk PD stays on every stand, including a hop-stand row. Isaac hop
+        ``kp=20 kd=0.5`` sags the calves on these torque motors and the
+        legs cannot push off.
         """
         del origin  # always recentre — tip recovery is the contract
         super().reset_to_pose(pose)
         self._hold_targets = [float(v) for v in pose]
+        self._pd_gains = _go2_pd_gains()
         self._per_step_update(self._hold_targets)
         self._snap_base_upright(origin=True)
 
+    def _lowest_foot_bottom(self) -> float | None:
+        """World-z of the lowest foot-sphere bottom, or ``None`` if unnamed."""
+        assert self._model is not None and self._data is not None
+        import mujoco as mj  # noqa: PLC0415  # reason: optional sim-only dep
+
+        bottoms: list[float] = []
+        for name in _GO2_FOOT_GEOMS:
+            geom_id = mj.mj_name2id(self._model, mj.mjtObj.mjOBJ_GEOM, name)
+            if geom_id < 0:
+                continue
+            bottoms.append(
+                float(self._data.geom_xpos[geom_id][2] - self._model.geom_size[geom_id][0])
+            )
+        if not bottoms:
+            return None
+        return min(bottoms)
+
     def _snap_base_upright(self, *, origin: bool = False) -> None:
-        """Pin the free joint upright at stand height; zero base twist."""
+        """Pin the free joint upright and drop the feet onto world z=0.
+
+        Hub ``_stand_base_z`` is the menagerie keyframe height. Hop (and any
+        other) joint snap that keeps that z plants the feet through the
+        floor — hop Apply then looks like a shuffle that never leaves the
+        ground. Recompute z from the current foot spheres after the joint
+        snap so each stand sits on the plane.
+        """
         assert self._data is not None and self._model is not None
         import mujoco as mj  # noqa: PLC0415  # reason: optional sim-only dep
 
         x = 0.0 if origin else float(self._data.qpos[0])
         y = 0.0 if origin else float(self._data.qpos[1])
-        z = float(self._stand_base_z)
+        z = float(self._data.qpos[2])
         # MuJoCo free-joint quat is wxyz; identity = upright.
         self._data.qpos[0:7] = (x, y, z, 1.0, 0.0, 0.0, 0.0)
         self._data.qvel[0:6] = 0.0
         mj.mj_forward(self._model, self._data)
+        lowest = self._lowest_foot_bottom()
+        if lowest is not None:
+            self._data.qpos[2] = z - lowest
+        else:
+            self._data.qpos[2] = float(self._stand_base_z)
+        mj.mj_forward(self._model, self._data)
+        self._stand_base_z = float(self._data.qpos[2])
 
 
     def idle_step(self, wall_dt_s: float | None = None) -> bool:

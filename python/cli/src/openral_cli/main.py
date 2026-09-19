@@ -25,6 +25,7 @@ rskill new          Scaffold a new local rSkill from rskills/template/.
 collision lower     Lower a robot's URDF/SRDF into its self-collision model.
 collision check     Fail if a manifest drifts from its lowered collision model.
 check               Cross-validate every robot/skill/scene manifest in one pass.
+viz mujoco          Kinematic MuJoCo window from the dashboard /api/qpos stream.
 
 Run ``openral --help`` for full usage.
 """
@@ -69,6 +70,7 @@ from openral_cli.dataset import dataset_app
 from openral_cli.deploy_sim import deploy_sim_command
 from openral_cli.install import install_app
 from openral_cli.prompt import prompt_command
+from openral_cli.viz import viz_app
 
 if TYPE_CHECKING:
     from openral_core import (
@@ -3668,6 +3670,10 @@ app.add_typer(dataset_app, name="dataset")
 # (it pulls yourdfpy/trimesh) so `openral --help` stays fast.
 app.add_typer(collision_app, name="collision")
 
+# `openral viz mujoco` — laptop kinematic viewer. mujoco is imported inside
+# the command so `openral --help` stays light.
+app.add_typer(viz_app, name="viz")
+
 # `openral check` — static, host-independent validation of the declarative
 # robot/skill/scene set (manifests parse, asset refs resolve, scene robot_ids and
 # rSkill embodiment tags resolve). Complements `openral rskill check`. Manifest
@@ -3799,9 +3805,41 @@ def dashboard(
             " --rskill diffusion-pusht'`."
         ),
     ),
+    init_acquire_env: bool = typer.Option(
+        False,
+        "--init-acquire-env",
+        help=(
+            "Write ~/.openral/dashboard.env (or OPENRAL_DASHBOARD_ENV) from "
+            "ACQUIRE_API_URL + ACQUIRE_API_KEY and exit. URL defaults to the "
+            "documented Railway acquire-api origin when unset. Does not start "
+            "the server. Never prints the key."
+        ),
+    ),
 ) -> None:
     """Serve the OpenRAL live dashboard."""
-    import shlex
+    if init_acquire_env:
+        from openral_observability.dashboard.acquire_client import (
+            ACQUIRE_API_KEY_ENV,
+            ACQUIRE_API_URL_ENV,
+            DASHBOARD_ENV_FILE_ENV,
+            RAILWAY_ACQUIRE_API_URL,
+            default_dashboard_env_path,
+            write_dashboard_acquire_env,
+        )
+
+        url = os.environ.get(ACQUIRE_API_URL_ENV, "").strip() or RAILWAY_ACQUIRE_API_URL
+        key = os.environ.get(ACQUIRE_API_KEY_ENV, "").strip()
+        if not key:
+            typer.echo(
+                "ACQUIRE_API_KEY is empty. Export it or run `just dashboard-acquire-env`.",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        override = os.environ.get(DASHBOARD_ENV_FILE_ENV, "").strip()
+        dest = Path(override).expanduser() if override else default_dashboard_env_path()
+        written = write_dashboard_acquire_env(dest, url=url, api_key=key)
+        typer.echo(f"Wrote {written} (url={url}, key=set)", err=True)
+        return
 
     from openral_observability.dashboard import run_dashboard
 

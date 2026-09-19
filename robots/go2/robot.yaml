@@ -206,6 +206,9 @@ sensors:
       cy: 240.0
     encoding: "rgb8"
     vla_feature_key: "observation.images.front"
+    # Snout cannot show the body. Skip EGL so ``top`` + 200 Hz proprio keep
+    # the HAL timeslice. Spec stays for a future VLA that consumes this slot.
+    sim_render: false
     sim_placement:
       parent_body: "base"
       pos: [0.32715, -0.00003, 0.04297]

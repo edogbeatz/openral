@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>OpenRAL · Live Dashboard</title>
 <link rel="stylesheet" href="/static/fonts/fonts.css" />
-<link rel="stylesheet" href="/static/dashboard.css?v=cam2" />
+<link rel="stylesheet" href="/static/dashboard.css?v=cam7" />
 </head>
 <body>
 
@@ -22,6 +22,7 @@
     <span class="trace-id" id="trace-id" title="click to copy">—</span>
     <a class="jaeger disabled" id="jaeger-link" target="_blank" rel="noopener" title="open latest trace in Jaeger">jaeger ↗</a>
   </span>
+  <a class="simple-link" href="/simple">simple</a>
   <span class="deck-tag">otlp / http · :4318</span>
   <div class="conn wait" id="conn"><span class="dot"></span><span id="conn-label">waiting…</span></div>
 </header>
@@ -85,7 +86,7 @@
       -->
       <div class="demo-bar" id="card-demo" hidden>
         <span class="lbl">demo</span>
-        <span class="demo-step" id="demo-step">1 · Choose robot</span>
+        <span class="demo-step" id="demo-step">1 · Load the unit</span>
         <button type="button" id="demo-go2" data-preset="go2"
           title="Cold-load the bare 12-DoF Go2 (no arm); auto-calibrates when up">Bare Go2</button>
         <button type="button" id="demo-go2-z1" data-preset="go2_z1"
@@ -106,7 +107,7 @@
           title="End the cricket GPU session: cancel skill (no E-STOP), stop the graph, stop billing. Distinct from Stop, which keeps the sim.">End Cricket</button>
         <span class="meta demo-idle" id="demo-cricket-idle" hidden>auto-stop in —</span>
         <span class="meta demo-cricket-links" id="demo-cricket-links" hidden></span>
-        <span class="meta" id="demo-hint">Choose Bare Go2 or Go2 + Z1</span>
+        <span class="meta" id="demo-hint">Nothing is loaded. Pick Bare Go2 or Go2 + Z1</span>
         <span class="status" id="demo-status"></span>
       </div>
       <div class="prompt-hint">Hit <b>Stop</b> to cancel the walk skill (hold stand; Apply again). <b>End Cricket</b> shuts the GPU session (not E-STOP). <b>E-STOP</b> latches the safety kernel. Demo: <b>Bare Go2</b> auto-calibrates then <b>select skill + Apply</b>. <b>Go2 + Z1</b> asks you to <b>Recalibrate</b> first. Idle auto-stops cricket after 15 min with no operator action.</div>
@@ -143,43 +144,24 @@
        the short list/gauge cards (rSkill, joints, system, ledger, world state)
        stack in a narrow right rail at their natural height.
 
-       Cameras are the exception to REVEAL_ON_FEED: Go2 main (`front`) and side
-       (`top`) stay mounted from first paint so WAITING is two labeled panels,
-       not an empty grid. Other optional cards still hide until their producer
-       speaks. Once revealed a card never re-hides. -->
+       Cameras are the exception to REVEAL_ON_FEED: Go2 side (`top`) stays
+       mounted from first paint so WAITING is one labeled panel, not an empty
+       grid. `front` is declared (`sim_render: false`) and is not streamed.
+       Other optional cards still hide until their producer speaks. Once
+       revealed a card never re-hides. -->
   <div class="workspace">
 
     <!-- MAIN VISUAL — cameras always live; reasoner · SLAM · pointcloud opt-in -->
     <div class="main-visual" id="main-visual" data-live="1">
 
-      <!-- Perception cameras — always shown (Go2 HAL keys: front = main, top = side) -->
+      <!-- Perception cameras — always shown (Go2 HAL key: top = 3/4 twin) -->
       <section id="cell-cameras">
         <h2>Perception · cameras</h2>
-        <div class="cameras scroll-y grow" id="cameras" data-roster="front|top">
-          <div class="camera is-streaming" data-camera="front" data-role="main">
-            <div class="image-wrap">
-              <img alt="Main · front" src="/api/camera/front/stream" />
-              <div class="camera-placeholder">waiting for camera</div>
-              <canvas class="overlay"></canvas>
-              <span class="corner tl"></span><span class="corner tr"></span>
-              <span class="corner bl"></span><span class="corner br"></span>
-              <div class="crosshair"></div>
-              <div class="pill-row">
-                <span class="pill live-pill" style="display:none"></span>
-                <span class="pill neutral role-pill">main</span>
-              </div>
-              <div class="overlay-src"></div>
-            </div>
-            <div class="footer">
-              <span class="name">Main · front</span>
-              <span class="lat">—</span>
-              <span class="meta-sub dims">snout RGB · waiting</span>
-              <span class="meta-sub right fps"></span>
-            </div>
-          </div>
+        <div class="cameras scroll-y grow" id="cameras" data-roster="top">
           <div class="camera is-streaming" data-camera="top" data-role="side">
             <div class="image-wrap">
-              <img alt="Side · top" src="/api/camera/top/stream" />
+              <img class="camera-stream" alt="Side · top" src="/api/camera/top/stream" />
+              <img class="camera-still" alt="" hidden />
               <div class="camera-placeholder">waiting for camera</div>
               <canvas class="overlay"></canvas>
               <span class="corner tl"></span><span class="corner tr"></span>
@@ -416,6 +398,6 @@
 
 </main>
 
-<script src="/static/dashboard.js?v=walk1"></script>
+<script src="/static/dashboard.js?v=cam8"></script>
 </body>
 </html>

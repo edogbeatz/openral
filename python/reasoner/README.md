@@ -50,6 +50,13 @@ from openral_reasoner import (
   registry, rebuilt on `/openral/skill_registry_changed`.
 - `MemoryStore`, `MissionState`, `evaluate_task_verdict` — self-maintained
   memory and success-gated task queue.
+- `TypeSafeGate` / `decide_reasoner_typesafe` — **opt-in** System One
+  judgment sidecar (`OPENRAL_TYPESAFE=1` + `TYPESAFE_API_KEY`,
+  `just sync --group typesafe`). Parallel Choice/Noul questions against
+  the live palette; code owns thresholds. High-confidence walk/arm
+  commands skip the LLM and emit `ExecuteRskillTool`; safety-bypass
+  language fail-closes to `WaitTool`. Not OpenRAL S1 and not the C++
+  kernel. Questions live in `typesafe_questions.py`.
 
 See [`docs/methods/06-reasoning-wam-safety-observability.md`](../../docs/methods/06-reasoning-wam-safety-observability.md)
 for the full symbol inventory and

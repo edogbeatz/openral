@@ -531,10 +531,12 @@ def _write_foxglove_layout(
     OpenArm does not broadcast (its root is ``openarm_base``), so the robot's
     own ``base_frame`` is threaded through rather than guessed.
 
-    ``compressed=True`` (the deploy default) points Image panels at the
+    ``compressed=True`` (the deploy default) points Image panels at
+    ``/image/compressed``. Sim HAL publishes that JPEG natively (same
+    bytes as the dashboard thumbnail). Real cells still need
     ``image_transport`` ``/compressed`` siblings — raw 640×480 RGB8 is
-    ~9 MB/s/camera and saturates a laptop websocket. Pair with
-    ``_foxglove_compressed_republishers``.
+    ~9 MB/s/camera and saturates a laptop websocket. Pair real deploys
+    with ``_foxglove_compressed_republishers``.
 
     A layout is imported client-side, so no launch argument can push one into
     the viewer — but the launch is the only place that knows the answer, so it
@@ -568,8 +570,9 @@ def _foxglove_compressed_republishers(
     """``image_transport`` raw→compressed republishers for Foxglove Image panels.
 
     Same nodes ``foxglove.launch.py`` spawns when ``republish_compressed:=true``.
-    Kept next to the layout generator because ``--foxglove`` on deploy must
-    emit both the ``/compressed`` topics and a layout that points at them.
+    Sim HAL publishes ``/compressed`` itself (dashboard JPEG, no extra
+    encode). Real cells still need these because the sensor leg's ROS
+    tee is raw ``sensor_msgs/Image``.
     """
     nodes: list[Node] = []
     for idx, name in enumerate(cameras):
@@ -2120,7 +2123,9 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             _rgb_sensors = [
                 _s
                 for _s in _robot_doc.get("sensors", [])
-                if _s.get("modality") == "rgb" and _s.get("name")
+                if _s.get("modality") == "rgb"
+                and _s.get("name")
+                and _s.get("sim_render", True) is not False
             ]
             if _rgb_sensors:
                 det_camera = str(_rgb_sensors[0]["name"])
@@ -2454,13 +2459,21 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         )
         nodes.append(TimerAction(period=5.0, actions=[foxglove_bridge_node]))
 
-        # Sim renders every manifest RGB (``sim_placement``); a real cell only
-        # publishes cameras that carry a ``deploy_binding``. Using the bound
-        # list on sim left Go2's Image panel on ``front`` only when the
-        # operator imported a hand-built layout — and ``front`` cannot see
-        # the robot. ``build_layout`` then leads with ``top`` when present.
+        # Sim layout is RGB cameras the HAL actually renders (``sim_render``).
+        # A real cell only publishes cameras that carry a ``deploy_binding``.
+        # Go2 ``front`` is declared for VLA matching but ``sim_render: false``
+        # (snout cannot see the body). ``build_layout`` leads with ``top``.
         layout_cameras = (
-            list(rgb_camera_names) if hal_mode == "sim" else list(bound_rgb_camera_names)
+            [
+                name
+                for name in rgb_camera_names
+                if next(
+                    (s.sim_render for s in description.sensors if s.name == name),
+                    True,
+                )
+            ]
+            if hal_mode == "sim"
+            else list(bound_rgb_camera_names)
         )
         layout_path = _write_foxglove_layout(
             layout_cameras, description.name, description.base_frame, compressed=True
@@ -2472,9 +2485,13 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 f"(cameras: {', '.join(layout_cameras)}, compressed images)",
                 flush=True,
             )
-        nodes.extend(
-            _foxglove_compressed_republishers(layout_cameras, use_sim_time=use_sim_time)
-        )
+        # Sim HAL already publishes /image/compressed (native JPEG). Spawning
+        # image_transport on that graph would subscribe the raw RGB8 topic
+        # and force the ~900 KiB GIL copy the Go2 cameras were drowning in.
+        if hal_mode != "sim":
+            nodes.extend(
+                _foxglove_compressed_republishers(layout_cameras, use_sim_time=use_sim_time)
+            )
 
         # Bucket-2 converter. The layout's collision/voxel panels read
         # `/openral/world_collisions_markers` + `/openral/world_voxels_cloud`,

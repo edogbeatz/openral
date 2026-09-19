@@ -9,6 +9,7 @@ mocks per CLAUDE.md §1.11; the helper goes through real Pillow.
 from __future__ import annotations
 
 import io
+from pathlib import Path
 
 from openral_core.schemas import FrameEncoding, SensorFrame
 from openral_observability.producer import encode_frame_thumbnail
@@ -145,6 +146,31 @@ def test_go2_sized_source_is_capped_not_passed_through() -> None:
     assert out is not None
     decoded = Image.open(io.BytesIO(out))
     assert (decoded.width, decoded.height) == (480, 360)
+
+
+def test_encode_rgb_thumbnail_rotate_180_keeps_envelope() -> None:
+    """Dashboard flip is Pillow rotate, not a second 640×480 ndarray copy."""
+    import numpy as np
+    from PIL import Image
+    from openral_observability.producer import encode_rgb_thumbnail
+
+    rgb = np.zeros((40, 80, 3), dtype=np.uint8)
+    rgb[0, 0] = (255, 0, 0)
+    plain = encode_rgb_thumbnail(rgb)
+    flipped = encode_rgb_thumbnail(rgb, rotate_180=True)
+    assert plain is not None and flipped is not None
+    size = Image.open(io.BytesIO(plain)).size
+    assert size == Image.open(io.BytesIO(flipped)).size == (80, 40)
+
+
+def test_jpeg_thumbnail_uses_bilinear_not_lanczos() -> None:
+    """LANCZOS of two Go2 cameras hitch the HAL executor next to physics."""
+    from openral_observability import producer
+
+    src = Path(__file__).resolve().parents[1] / "src/openral_observability/producer.py"
+    text = src.read_text(encoding="utf-8")
+    assert "Image.Resampling.BILINEAR" in text
+    assert "Image.Resampling.LANCZOS" not in text
 
 
 def test_sub_cap_source_is_not_upscaled() -> None:

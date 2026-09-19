@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import structlog
+from openral_rskill_ros._resident_episode import reset_resident_episode
 from openral_rskill_ros.scripted_horizon import (
     optional_positive_float,
     optional_positive_int,
@@ -53,7 +54,7 @@ if TYPE_CHECKING:
     from openral_rskill.base import rSkillBase
     from openral_world_state import WorldStateAggregator
 
-__all__ = ["RskillRunnerNode", "main"]
+__all__ = ["RskillRunnerNode", "main", "reset_resident_episode"]
 
 log = structlog.get_logger(__name__)
 
@@ -690,6 +691,10 @@ if _ROS2_AVAILABLE:
             if self._resident_skill is not None and self._resident_key == req_key:
                 resident = cast("rSkillBase", self._resident_skill)
                 if resident.info.state is RSkillState.ACTIVE:
+                    # Weights stay loaded; episode state must not. Skipping
+                    # activate() used to leak last_action / hold-pad / horizon
+                    # so a second Go2 walk stood still.
+                    reset_resident_episode(resident)
                     return resident
                 # A key-matching resident that is no longer steppable
                 # (finalized by a lifecycle deactivate / estop teardown,
@@ -3147,6 +3152,20 @@ def _make_policy_adapter_skill(
             extras = getattr(manifest, "policy_extras", None) or {}
             self._horizon_s = optional_positive_float(extras.get("horizon_s"))
             self._horizon_ticks = optional_positive_int(extras.get("horizon_ticks"))
+            family = getattr(manifest, "model_family", None)
+            family_s = str(getattr(family, "value", family) or "")
+            from openral_sim.policies.rsl_rl_onnx import (
+                resolve_coast_budget_s,
+                resolve_coast_to_stand_s,
+            )
+
+            self._coast_to_stand_s = resolve_coast_to_stand_s(dict(extras), family=family_s)
+            latency = getattr(manifest, "latency_budget", None)
+            self._coast_budget_s = resolve_coast_budget_s(
+                dict(extras),
+                horizon_s=self._horizon_s,
+                max_execution_s=getattr(latency, "max_execution_s", None),
+            )
             self._horizon_started: float | None = None
             self._horizon_ticks_ran = 0
             self._hold_pad_pose: list[float] | None = None
@@ -3188,13 +3207,13 @@ def _make_policy_adapter_skill(
             family reads ``pose`` / ``arm``. Empty payload restores the
             load-time default on a resident skill.
 
-            Also resets the scripted-horizon clock. A reused resident skill
+            Also resets per-goal episode state. A reused resident skill
             skips ``activate()``, so without this a second ``execute_rskill``
-            after ``horizon_s`` already elapsed would raise
+            would keep the previous ``last_action`` / hold-pad / horizon —
+            Go2 walk stands still, and ``horizon_s`` raises
             ``ROSRskillGoalSatisfied`` on the first tick.
             """
-            self._horizon_started = None
-            self._horizon_ticks_ran = 0
+            reset_resident_episode(self)
             from openral_sim.policies.rsl_rl_onnx import apply_velocity_command_override
 
             override = apply_velocity_command_override(self._adapter, goal_params_json)
@@ -3242,6 +3261,7 @@ def _make_policy_adapter_skill(
             # proprio every tick lets base motion walk an idle arm (go2_z1)
             # off home until the carrier tips.
             self._hold_pad_pose: list[float] | None = None
+            self._step_count = 0
             if hasattr(self._adapter, "reset"):
                 self._adapter.reset()  # type: ignore[attr-defined]
 
@@ -3425,6 +3445,14 @@ def _make_policy_adapter_skill(
             _attach_locomotion_proprio(obs, world_state)
             if self._velocity_commands_override is not None:
                 obs["velocity_commands"] = list(self._velocity_commands_override)
+            from openral_sim.policies.rsl_rl_onnx import in_coast_to_stand_window
+
+            if in_coast_to_stand_window(
+                elapsed_s=elapsed_s,
+                budget_s=self._coast_budget_s,
+                coast_to_stand_s=self._coast_to_stand_s,
+            ):
+                obs["velocity_commands"] = [0.0, 0.0, 0.0]
 
             action_array = self._adapter.step(obs, self._prompt)  # type: ignore[attr-defined]
             # Reorder policy-order action → robot-order action so the

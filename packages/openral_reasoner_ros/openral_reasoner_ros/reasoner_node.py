@@ -144,6 +144,11 @@ from openral_reasoner.tool_use import (
     build_tool_use_client_from_env,
     resolve_reasoner_system_prompt,
 )
+from openral_reasoner.typesafe_gate import (
+    apply_typesafe_to_tick,
+    build_typesafe_gate_from_env,
+    operator_prompt_for_typesafe,
+)
 from pydantic import ValidationError
 from rclpy.executors import ExternalShutdownException
 from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
@@ -1003,6 +1008,9 @@ class ReasonerNode(LifecycleNode):
         # a lifecycle transition is dropped instead of dispatching onto a
         # stopped node.
         self._llm_generation: int = 0
+        # Opt-in TypeSafe System One gate (OPENRAL_TYPESAFE=1 + TYPESAFE_API_KEY).
+        # Built in on_configure so a missing SDK never breaks import.
+        self._typesafe_gate: Any = None
         # An execute_rskill goal is being dispatched or is running (covers the
         # send→accept window `_active_rskill_goal` cannot). Gates a second
         # dispatch: the runner serves one goal at a time, and a forced tick
@@ -1063,7 +1071,7 @@ class ReasonerNode(LifecycleNode):
     # ── lifecycle transitions ───────────────────────────────────────────────
 
     @log_lifecycle_errors
-    def on_configure(  # noqa: PLR0915  # reason: linear lifecycle setup — declare params, build the tool-use client, and open each gated subscriber in sequence; splitting hurts readability
+    def on_configure(  # noqa: PLR0912, PLR0915  # reason: linear lifecycle setup — declare params, build the tool-use client, and open each gated subscriber in sequence; splitting hurts readability
         self, state: LifecycleState
     ) -> TransitionCallbackReturn:
         """Build the tool-use client + subscribers; no ticking yet."""
@@ -1324,6 +1332,11 @@ class ReasonerNode(LifecycleNode):
             client=client,
             system_prompt=system_prompt,
         )
+        self._typesafe_gate = build_typesafe_gate_from_env()
+        if self._typesafe_gate is not None:
+            self.get_logger().info(
+                "on_configure: TypeSafe gate enabled (OPENRAL_TYPESAFE=1)",
+            )
 
         self.get_logger().info(
             f"on_configure: reasoner ready at {self._tick_hz} Hz "
@@ -1386,6 +1399,7 @@ class ReasonerNode(LifecycleNode):
         """Drop state; subscriptions are auto-cleaned by rclpy."""
         del state
         self._core = None
+        self._typesafe_gate = None
         self._occupancy_grid = None
         self._renderer = ContextRenderer()
         # VLM-adjudicated completion §5 — clear the VLM client handle and frame cache on cleanup.
@@ -2742,13 +2756,28 @@ class ReasonerNode(LifecycleNode):
         generation = self._llm_generation
 
         def _llm_worker() -> None:
-            # Worker thread: ONLY the blocking client round-trip. Everything
-            # stateful (retry-cap, renderer drain, dispatch) is marshaled
-            # back onto the executor thread.
+            # Worker thread: TypeSafe assess (optional) then the blocking LLM
+            # round-trip. Stateful finish/dispatch stays on the executor.
             call: Any = None
             error: BaseException | None = None
             try:
-                call = core.run_prepared_llm(prep)
+                gate = self._typesafe_gate
+                operator = operator_prompt_for_typesafe(prep.prompts)
+                if gate is not None and operator is not None:
+                    adj = apply_typesafe_to_tick(
+                        prompt_text=operator.text,
+                        palette=prep.palette,
+                        context_text=prep.context_text,
+                        gate=gate,
+                    )
+                    prep.palette = adj.palette
+                    prep.context_text = adj.context_text
+                    if adj.skip_llm_call is not None:
+                        call = adj.skip_llm_call
+                    else:
+                        call = core.run_prepared_llm(prep)
+                else:
+                    call = core.run_prepared_llm(prep)
             except Exception as exc:  # reason: marshaled to finish_tick, the single handler
                 error = exc
             self._post_to_executor(

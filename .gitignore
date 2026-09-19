@@ -20,6 +20,13 @@ htmlcov/
 coverage.xml
 *.cover
 
+# Node (simple auto-play UI)
+node_modules/
+python/observability/simple_ui/node_modules/
+python/observability/simple_ui/.next/
+python/observability/simple_ui/out/
+python/observability/simple_ui/*.tsbuildinfo
+
 # uv
 .venv/
 .venv-*/  # isolated sidecar dev venvs (e.g. .venv-la for the LocateAnything sidecar)
@@ -53,6 +60,7 @@ Thumbs.db
 *.env
 .env.*
 !.env.example
+!.env.dashboard.example
 
 # HF Hub cache
 .cache/huggingface/
@@ -119,6 +127,9 @@ rskills/rtdetr-v2-r50vd/onnx_tmp/
 # default output lands here. Generated locally, never committed.
 rskills/act-libero/model.onnx
 rskills/act-libero/model_device.onnx
+# mjlab hop ONNX is not vendored (upstream deploy repo has no license);
+# the adapter fetches it into ~/.cache/openral/rsl_rl_onnx/.
+rskills/rsl-rl-onnx-go2-hop-flat/policy.onnx
 
 # rSkill NF4 weights and upstream custom-code sidecars generated locally for
 # private HF publication. The committed package records provenance and

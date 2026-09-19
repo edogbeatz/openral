@@ -11,6 +11,21 @@ eight-layer model in the project docs.
 - **Source:** https://github.com/OpenRAL/openral
 - **License:** Apache-2.0
 
+## Start the app
+
+Agents: when asked to start the app / dashboard / cricket / `/simple`,
+**run it this turn**. Do not print the command and wait.
+
+```bash
+just dashboard    # laptop /simple collector (write-controls)
+# or: .agents/skills/go2-foxglove-view/scripts/start-app.sh
+```
+
+Reuse `http://127.0.0.1:4318/healthz` if live; then
+`POST /api/demo/cricket/start` if the twin is down. Open
+`http://127.0.0.1:4318/simple`. Full steps:
+[`docs/quickstart/dashboard.md`](../../docs/quickstart/dashboard.md).
+
 > All OpenRAL workspace packages move in lockstep at `0.1.x` until the first
 > public release.
 
@@ -95,12 +110,16 @@ This endpoint re-serves the per-camera OTLP thumbnail JPEG as a continuous
 flow in via the `sensors.read_latest` span attribute `thumbnail_jpeg_b64`.
 Sim HAL cameras emit those spans at the camera timer (capped 25 Hz); the
 EventSource snapshot omits the JPEG so a 30 Hz telemetry tick does not
-re-parse two base64 thumbs. No extra camera pipeline is needed. Go2 hero
-slots `front` (main/snout) and `top` (side/3/4) are always known, so the
-page mounts two labeled panels while WAITING and the stream waits for a
-frame. A laptop dashboard with no local OTLP follows cricket's tunneled
+re-parse two base64 thumbs. No extra camera pipeline is needed. `/simple`
+consumes the stream with fetch + canvas (keep the latest JPEG if decode
+lags) instead of `<img src=multipart>`, which remounts on spurious
+`error` and hitchs the tile. Go2 hero
+slot `top` (side/3/4) is always known, so the
+page mounts one labeled panel while WAITING and the stream waits for a
+frame. `front` is declared on the robot (`sim_render: false`) and is
+not a hero slot. A laptop dashboard with no local OTLP follows cricket's tunneled
 dashboard (`http://127.0.0.1:14318/api/camera/{source}/stream`) so this
-`:4318` page shows the same two pictures. 404 only for a name that is
+`:4318` page shows the same picture. 404 only for a name that is
 not a hero slot and has never been ingested.
 
 ## Perception overlays on the camera tiles
@@ -223,8 +242,9 @@ POST /api/param/set       # tune a non-safety ROS 2 parameter via ros2 param set
 Plus the Go2 **demo** bar (same gate):
 
 ```
-POST /api/demo/stand | recalibrate   # e-stop clear + ResetToPose (Go2+Z1 parks Z1 at arm-ready)
-POST /api/demo/walk                  # apply rsl-rl velocity walk (when that skill is selected)
+POST /api/demo/stand | recalibrate   # e-stop clear + ResetToPose (laptop SSHes ros2; graph down → disconnected)
+POST /api/chat                       # /simple Acquire probe/ask (ACQUIRE_API_* or ~/.openral/dashboard.env; no prompt publish)
+POST /api/demo/walk                  # apply rsl-rl velocity walk (default [0.35,0,0]; optional joystick)
 POST /api/demo/stop                  # cancel ExecuteRskill (no e-stop latch) + Hub stand
 POST /api/demo/load                  # cold-reload Bare Go2 (auto-stand) / Go2+Z1 (Recalibrate next)
 GET  /api/demo/cricket               # idle remaining; occupancy; does not reset the timer
@@ -270,10 +290,17 @@ skill picker is fed by the read-only
 `rskills/*/rskill.yaml` via `openral_rskill.loader.discover_intree_rskills` and
 reports each manifest's `name` — the id the skill_runner's in-tree resolver
 looks up — so a pick always resolves. Apply on the walk skill uses
-`POST /api/demo/walk` (`velocity_commands: [0.35, 0, 0]`); every other pick
-POSTs `/api/skill/execute` with blank goal params (manifest defaults). **Stop**
+`POST /api/demo/walk` (`velocity_commands: [0.35, 0, 0]` unless chat
+sent a joystick); every other pick
+POSTs `/api/skill/execute` with blank goal params (manifest defaults).
+`GET /simple` SKILL stays empty until chat Acquire proposes
+(`ACQUIRE_API_*` or `~/.openral/dashboard.env`; first probe `allow_adapt: false`).
+Chat `#chat-apply` runs APPLYING… when load already stood (STANDING… only if not; STOP while
+running). **Stop**
 cancels that goal via `/openral/execute_rskill/_action/cancel_goal` and snaps
-Hub stand — it does not latch e-stop. **Start Cricket** / **End Cricket** sit
+Hub stand — it does not latch e-stop. Cancel-all is idempotent (nothing
+in flight is `ERROR_REJECTED`, not a fault) and a broken cancel reply
+still stands. **Start Cricket** / **End Cricket** sit
 on the same bar: a laptop Start `brev start`s a stopped box, opens SSH
 tunnels (Foxglove `:8765`, cricket dashboard `:14318`), and attaches the
 graph (already-running is a success, not a relaunch); End cancels the skill

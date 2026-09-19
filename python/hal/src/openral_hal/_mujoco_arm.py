@@ -423,7 +423,7 @@ class MujocoArmHAL(HALBase):
         composed-scene arm (openarm) publishes ``/openral/cameras/<name>/image``
         through the shared bridge instead of a bespoke node renderer.
 
-        Each RGB ``SensorSpec`` is rendered from the
+        Each RGB ``SensorSpec`` with ``sim_render=True`` is rendered from the
         MJCF camera ``sensor.sim_camera_name or sensor.name`` at **its own**
         ``intrinsics`` resolution (one ``mujoco.Renderer`` is cached per distinct
         ``(height, width)``), so the published frame size always matches the
@@ -441,7 +441,7 @@ class MujocoArmHAL(HALBase):
         """
         if not self._connected or self._model is None or self._data is None:
             return {}
-        rgb = [s for s in self.description.sensors if s.modality == "rgb"]
+        rgb = [s for s in self.description.sensors if s.modality == "rgb" and s.sim_render]
         if not rgb or self._render_failed:
             return {}
         try:

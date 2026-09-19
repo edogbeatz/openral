@@ -19,12 +19,13 @@ _BARE = """<mujoco model="t">
 </mujoco>"""
 
 
-def _rgb(name: str, parent_body: str | None) -> SensorSpec:
+def _rgb(name: str, parent_body: str | None, *, sim_render: bool = True) -> SensorSpec:
     return SensorSpec(
         name=name,
         modality="rgb",
         frame_id="f",
         rate_hz=30.0,
+        sim_render=sim_render,
         sim_placement=CameraSimPlacement(
             parent_body=parent_body, pos=(0.0, 0.0, 0.5), target=(0.0, 0.0, 0.0)
         ),
@@ -56,6 +57,39 @@ def test_idempotent_when_cameras_present() -> None:
     twice, changed = rig_cameras_into_mjcf(once, [_rgb("front", None), _rgb("wrist", "gripper")])
     assert changed is False
     assert twice == once
+
+
+def test_sim_render_false_is_not_spliced() -> None:
+    """Go2 snout stays declared but must not pay a second EGL camera."""
+    xml, changed = rig_cameras_into_mjcf(
+        _BARE, [_rgb("front", None, sim_render=False), _rgb("top", None)]
+    )
+    assert changed
+    cams = re.findall(r'<camera[^>]*name="([^"]+)"', xml)
+    assert cams == ["top"]
+
+
+def test_go2_and_go2_z1_yaml_top_is_the_egl_camera() -> None:
+    """Cricket Bare Go2 was missing ``top``; /simple then showed a 1 Hz leftover.
+
+    Go2+Z1 already declared the 3/4 camera, so the armed twin looked smooth.
+    Both fixtures must keep ``front`` declared and ``sim_render=false``.
+    """
+    from pathlib import Path
+
+    from openral_core import RobotDescription
+
+    repo = Path(__file__).resolve().parents[3]
+    for rel in ("robots/go2/robot.yaml", "robots/go2_z1/robot.yaml"):
+        desc = RobotDescription.from_yaml(str(repo / rel))
+        rgb = [s for s in desc.sensors if s.modality == "rgb"]
+        names = [s.name for s in rgb]
+        assert "top" in names, rel
+        assert "front" in names, rel
+        front = next(s for s in rgb if s.name == "front")
+        top = next(s for s in rgb if s.name == "top")
+        assert front.sim_render is False, rel
+        assert top.sim_render is True, rel
 
 
 def test_noop_without_sim_placement() -> None:

@@ -42,6 +42,22 @@ def test_set_then_latest_returns_same_frame() -> None:
     assert got.base_pose_6dof == ((7.0, 7.0, 0.7), (0.0, 0.0, 0.0, 1.0))
     assert got.state.stamp_ns == 7
     assert got.sim_time_ns == 7  # carried for the /clock publisher
+    assert got.qpos is None  # optional; sim capture fills it from MjData
+
+
+def test_qpos_tuple_is_plain_data() -> None:
+    snap = ProprioSnapshot()
+    qpos = tuple(float(i) for i in range(19))
+    snap.set(
+        ProprioFrame(
+            state=JointState(name=["FL_hip_joint"], position=[0.1], stamp_ns=1),
+            base_pose=(0.0, 0.0, 0.0),
+            base_pose_6dof=((0.0, 0.0, 0.27), (0.0, 0.0, 0.0, 1.0)),
+            base_twist=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            qpos=qpos,
+        )
+    )
+    assert snap.latest().qpos == qpos
 
 
 def test_latest_reflects_most_recent_set() -> None:

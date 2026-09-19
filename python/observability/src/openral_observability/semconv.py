@@ -101,6 +101,11 @@ HAL_JOINT_POSITION_LIMITS_HI: Final[str] = "openral.hal.joint.position_limits_hi
 HAL_JOINT_VELOCITY_LIMITS: Final[str] = "openral.hal.joint.velocity_limits"
 HAL_JOINT_EFFORT_LIMITS: Final[str] = "openral.hal.joint.effort_limits"
 HAL_JOINT_STAMP_NS: Final[str] = "openral.hal.joint.stamp_ns"
+# Full MuJoCo qpos (free joint + actuated) on the same ``hal.read_state``
+# span. A laptop kinematic viewer polls this via ``GET /api/qpos`` so
+# cricket does not stream pixels. Capped at 128 DoF in the producer.
+HAL_QPOS: Final[str] = "openral.hal.qpos"
+HAL_NQ: Final[str] = "openral.hal.nq"
 
 # Commanded-action vector (recorded on `hal.send_action` spans). The
 # action shape mirrors the policy's action_horizon * action_dim; we
@@ -388,6 +393,8 @@ __all__ = [
     "HAL_JOINT_STAMP_NS",
     "HAL_JOINT_VELOCITIES",
     "HAL_JOINT_VELOCITY_LIMITS",
+    "HAL_NQ",
+    "HAL_QPOS",
     "HAL_ROBOT_MODEL",
     "INFERENCE_CHUNK_INDEX",
     "INFERENCE_CHUNK_SIZE",

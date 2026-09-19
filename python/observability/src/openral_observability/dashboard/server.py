@@ -87,7 +87,21 @@ def run_dashboard(  # noqa: PLR0915, PLR0912  # reason: linear bootstrap (app + 
     """
     import uvicorn  # local import: heavy enough to defer until invocation
 
+    from openral_observability.dashboard.acquire_client import apply_dashboard_env
     from openral_observability.dashboard.app import _write_controls_enabled, create_app
+
+    loaded_path, loaded_keys = apply_dashboard_env()
+    if loaded_path is not None and loaded_keys:
+        _LOG.warning(
+            "dashboard.acquire_env_loaded path=%s keys=%s",
+            loaded_path,
+            ",".join(loaded_keys),
+        )
+        print(
+            f"OpenRAL acquire env: {loaded_path} (loaded {', '.join(loaded_keys)})",
+            file=sys.stderr,
+            flush=True,
+        )
 
     app = create_app(store)
 
@@ -206,6 +220,23 @@ def run_dashboard(  # noqa: PLR0915, PLR0912  # reason: linear bootstrap (app + 
         _LOG.warning("dashboard.write_controls_enabled")
         print(f"WARNING: {_write_controls_msg}", file=sys.stderr, flush=True)
 
+    acquire = getattr(app.state, "acquire_client", None)
+    if acquire is None:
+        _acq_msg = (
+            "ACQUIRE_API_URL empty — /simple chat will FAULT. Set ACQUIRE_API_URL to "
+            "the sibling Acquire origin and ACQUIRE_API_KEY to that service's API_KEY, "
+            "then restart. There is no library default."
+        )
+        _LOG.warning("dashboard.acquire_unconfigured")
+        print(f"WARNING: {_acq_msg}", file=sys.stderr, flush=True)
+    else:
+        _LOG.warning("dashboard.acquire_configured base_url=%s", acquire.base_url)
+        print(
+            f"OpenRAL acquire: {acquire.base_url} (key={'set' if acquire.api_key else 'empty'})",
+            file=sys.stderr,
+            flush=True,
+        )
+
     if exposure is not None and _write_controls_enabled():
         _compound_msg = (
             "CRITICAL: dashboard is bound to a non-loopback address AND write-controls are "
@@ -229,7 +260,7 @@ def run_dashboard(  # noqa: PLR0915, PLR0912  # reason: linear bootstrap (app + 
     # which URL was attempted, alongside uvicorn's error.
     link_host = "localhost" if host in {"0.0.0.0", "::", ""} else host
     print(
-        f"OpenRAL dashboard: http://{link_host}:{port}/  "
+        f"OpenRAL dashboard: http://{link_host}:{port}/simple  "
         f"(OTLP endpoint: http://{link_host}:{port})",
         file=sys.stderr,
         flush=True,

@@ -22,7 +22,14 @@
 hal:
   defaults:
     gravity_enabled: true
-    # Same proprio freshness cliff as go2_walk — see that scene's comment.
+    # Same proprio freshness cliff as go2_walk — and now measured, on this
+    # robot, by `tools/go2_z1_mass_balance.py stale`: delaying the policy's
+    # observation bundle by one 20 ms tick still survives 8/8, but TWO ticks
+    # (40 ms) drops to 1/8 and three collapses inside 4 s. These 200 Hz rates
+    # keep the live age at a measured median 5.1 ms / p90 10.2 ms, inside the
+    # surviving band. **Do not lower them.** Bracketed by
+    # `tests/sim/test_go2_z1_rsl_rl_onnx_mujoco.py`; evidence in
+    # `docs/reference/go2-z1-mass-balance.md`.
     publish_rate_hz: 200.0
     odom_publish_rate_hz: 200.0
 

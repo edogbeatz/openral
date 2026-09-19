@@ -26,19 +26,25 @@ reset the timer. Polling ``GET /api/demo/cricket`` does not.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
 import shlex
+import shutil
 import socket
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.request
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final
 
 from fastapi.responses import JSONResponse
+
+from openral_observability.dashboard._fall import fallen_from_snapshot
 
 _logger = logging.getLogger("openral.dashboard")
 
@@ -54,12 +60,30 @@ _MAX_TCP_PORT: Final[int] = 65535
 DEPLOY_SIM_PGREP: Final[str] = "[o]penral deploy sim"
 _END_SCRIPT_PATH: Path = Path("/tmp/openral_cricket_end.sh")
 _ATTACH_SCRIPT_REMOTE: Final[str] = "/tmp/openral_cricket_attach.sh"
+_RELOAD_SCRIPT_REMOTE: Final[str] = "/tmp/openral_demo_relaunch.sh"
 _SKILL_LIVE_AGE_S: Final[float] = 4.0
 _SSH_STATUS_TIMEOUT_S: Final[float] = 12.0
 _CONTAINER_REPO: Final[str] = "/openral"
+#: Laptop → cricket copies so Apply hop is gym spring_jump, not a
+#: Hub 401 / mjlab crouch / old adapter. Reload still required
+#: (rsl_rl_onnx is already imported).
+CRICKET_HOP_SYNC_RELPATHS: Final[tuple[str, ...]] = (
+    "rskills/rsl-rl-onnx-go2-spring-jump",
+    "python/sim/src/openral_sim/policies/rsl_rl_onnx.py",
+)
+#: Laptop Calibrate/Apply when SSH/graph/credits are down. Never a PATH hint.
+CRICKET_DISCONNECTED_MSG: Final[str] = "cricket is disconnected"
+_ROS2_PATH_HINT: Final[str] = "`ros2` not on PATH; source the workspace install first"
 
 _WATCH: CricketIdleWatch | None = None
 _WATCH_LOCK = threading.Lock()
+#: Same age as the dashboard conn pill's dead threshold.
+_TUNNELED_INGEST_LIVE_S: Final[float] = 60.0
+_TUNNELED_STATE_TTL_S: Final[float] = 1.0
+_LIVE_ROBOT_IDS: Final[frozenset[str]] = frozenset({"go2", "go2_z1"})
+_tunneled_lock = threading.Lock()
+_tunneled_cache_mono: float = 0.0
+_tunneled_cache_payload: dict[str, Any] | None = None
 
 
 def cricket_instance_name() -> str:
@@ -74,18 +98,32 @@ def cricket_container_name() -> str:
     return raw or DEFAULT_CRICKET_CONTAINER
 
 
+def _openral_container_markers() -> bool:
+    """True inside the graph container.
+
+    Brev's hostname is ``brev-<id>`` (e.g. ``brev-d4dyyrsd1``), not
+    ``*cricket*``. The attach/relaunch scripts set
+    ``OPENRAL_CRICKET_ROLE=host``; this marker is the fallback when that
+    env is missing on an already-running graph.
+    """
+    return Path("/.dockerenv").is_file() and Path("/openral").is_dir()
+
+
 def on_cricket_host() -> bool:
     """True when this process is the cricket VM, not a laptop dashboard.
 
     ``OPENRAL_CRICKET_ROLE=host|laptop`` wins. Otherwise the hostname must
-    contain ``cricket`` (the Brev box). A Mac local dashboard is laptop.
+    contain ``cricket``, or we are inside the ``/openral`` graph container
+    (Brev hostnames are ``brev-<id>``). A Mac local dashboard is laptop.
     """
     raw = os.environ.get("OPENRAL_CRICKET_ROLE", "").strip().lower()
     if raw in {"host", "cricket"}:
         return True
     if raw in {"laptop", "local", "client"}:
         return False
-    return "cricket" in socket.gethostname().lower()
+    if "cricket" in socket.gethostname().lower():
+        return True
+    return _openral_container_markers()
 
 
 def can_start_from_cold() -> bool:
@@ -198,6 +236,7 @@ class CricketIdleWatch:
         self._in_flight = 0
         self._end_started = False
         self._start_started = False
+        self._start_error: str | None = None
 
     def touch(self) -> None:
         """Record operator activity; restarts the idle countdown."""
@@ -271,6 +310,7 @@ class CricketIdleWatch:
             if self._start_started:
                 return False
             self._start_started = True
+            self._start_error = None
             return True
 
     def reset_start_guard(self) -> None:
@@ -282,6 +322,16 @@ class CricketIdleWatch:
         """True after a background laptop Start has been scheduled."""
         with self._lock:
             return self._start_started
+
+    def set_start_error(self, message: str | None) -> None:
+        """Record a Brev/SSH/attach failure for ``GET /api/demo/cricket``."""
+        with self._lock:
+            self._start_error = message
+
+    def start_error(self) -> str | None:
+        """Last laptop-start failure, or ``None`` if the job has not failed."""
+        with self._lock:
+            return self._start_error
 
 
 def bind_watch(watch: CricketIdleWatch | None) -> None:
@@ -404,7 +454,11 @@ def cricket_viewer_payload() -> dict[str, Any]:
 
 
 def cricket_status_payload(store: object | None = None) -> dict[str, Any]:
-    """Wire shape for ``GET /api/demo/cricket`` and ``GET /api/config``."""
+    """Wire shape for ``GET /api/demo/cricket``.
+
+    A live graph clears a stale laptop ``start_error`` (``brev start``
+    can print ready before sshd accepts).
+    """
     watch = get_watch()
     timeout = idle_timeout_s()
     skill_live = False
@@ -418,6 +472,7 @@ def cricket_status_payload(store: object | None = None) -> dict[str, Any]:
     running = cricket_graph_running()
     if watch is not None and running:
         watch.reset_start_guard()
+        watch.set_start_error(None)
     payload: dict[str, Any] = {
         "instance": cricket_instance_name(),
         "container": cricket_container_name(),
@@ -433,6 +488,7 @@ def cricket_status_payload(store: object | None = None) -> dict[str, Any]:
         "halt_host": halt_host_enabled(),
         "end_in_progress": bool(watch is not None and watch.end_in_progress()),
         "start_in_progress": bool(watch is not None and watch.start_in_progress()),
+        "start_error": watch.start_error() if watch is not None else None,
     }
     payload.update(cricket_viewer_payload())
     return payload
@@ -469,11 +525,16 @@ def _write_controls_or_403() -> JSONResponse | None:
 
 
 async def cricket_status_response(store: object | None = None) -> JSONResponse:
-    """``GET /api/demo/cricket`` — idle remaining, occupancy, cold-start hint."""
+    """``GET /api/demo/cricket`` — idle remaining, occupancy, cold-start hint.
+
+    Occupancy SSH runs in a worker thread so this does not block the
+    uvicorn event loop (a blocked loop makes ``POST /start`` a silent wait).
+    """
     denied = _write_controls_or_403()
     if denied is not None:
         return denied
-    return JSONResponse(cricket_status_payload(store), status_code=200)
+    payload = await asyncio.to_thread(cricket_status_payload, store)
+    return JSONResponse(payload, status_code=200)
 
 
 async def touch_cricket_response() -> JSONResponse:
@@ -618,14 +679,266 @@ def _tcp_open(port: int, host: str = "127.0.0.1") -> bool:
         sock.close()
 
 
+def cricket_tunneled_state() -> dict[str, Any] | None:
+    """GET the tunneled cricket dashboard ``/api/state``, or ``None``.
+
+    Laptop-only. Cached ``1`` s so occupancy, the conn pill, and camera
+    stills do not stampede ``:14318``. Never fetched when this process
+    *is* cricket (that would loop).
+    """
+    global _tunneled_cache_mono, _tunneled_cache_payload
+    if on_cricket_host():
+        return None
+    now = time.monotonic()
+    with _tunneled_lock:
+        age = now - _tunneled_cache_mono
+        if _tunneled_cache_mono > 0.0 and age < _TUNNELED_STATE_TTL_S:
+            return _tunneled_cache_payload
+    port = cricket_dashboard_local_port()
+    payload: dict[str, Any] | None
+    if not _tcp_open(port):
+        payload = None
+    else:
+        url = f"http://127.0.0.1:{port}/api/state"
+        try:
+            with urllib.request.urlopen(url, timeout=1.5) as resp:
+                raw = resp.read()
+            parsed: object = json.loads(raw)
+            payload = parsed if isinstance(parsed, dict) else None
+        except (OSError, TimeoutError, json.JSONDecodeError, urllib.error.URLError):
+            payload = None
+    with _tunneled_lock:
+        _tunneled_cache_mono = time.monotonic()
+        _tunneled_cache_payload = payload
+    return payload
+
+
+def cricket_tunneled_ingest_live(*, max_age_s: float = _TUNNELED_INGEST_LIVE_S) -> bool | None:
+    """True/False from tunneled ``/api/state``, or ``None`` if the tunnel is dark."""
+    state = cricket_tunneled_state()
+    if state is None:
+        return None
+    last = state.get("last_ingest_ts")
+    if not isinstance(last, (int, float)) or float(last) <= 0.0:
+        return False
+    now = state.get("now_unix")
+    now_f = float(now) if isinstance(now, (int, float)) and float(now) > 0.0 else time.time()
+    return (now_f - float(last)) < max_age_s
+
+
+def cricket_live_robot_id() -> str:
+    """``go2`` / ``go2_z1`` from tunneled cricket identity, else ``""``.
+
+    Laptop ``GET /api/config`` has no ``OPENRAL_ROBOT_ID`` — the graph
+    env lives on cricket. Without this, ``/simple`` boots with an empty
+    UNIT while the twin is already loaded.
+    """
+    state = cricket_tunneled_state()
+    ident = state.get("identity") if isinstance(state, dict) else None
+    model = ident.get("openral.hal.robot.model") if isinstance(ident, dict) else None
+    if isinstance(model, str) and model in _LIVE_ROBOT_IDS:
+        return model
+    return ""
+
+
+def overlay_cricket_ingest(
+    snap: dict[str, Any], *, include_camera_thumbs: bool = False
+) -> dict[str, Any]:
+    """Copy cricket ingest onto an empty laptop collector snapshot.
+
+    The laptop ``:4318`` store never receives OTLP. Without this overlay the
+    ``/simple`` conn pill stays ``waiting…`` while cricket cameras are live.
+    ``include_camera_thumbs`` copies JPEG stills onto ``GET /api/state``
+    only — SSE stays thumb-free. ``fallen`` copies cricket's bool, or
+    computes it from cricket ``topics.robot_state.qpos``.
+    """
+    if snap.get("last_ingest_ts"):
+        return snap
+    state = cricket_tunneled_state()
+    if state is None:
+        return snap
+    last = state.get("last_ingest_ts")
+    if not isinstance(last, (int, float)) or float(last) <= 0.0:
+        return snap
+    out = dict(snap)
+    out["last_ingest_ts"] = float(last)
+    now = state.get("now_unix")
+    if isinstance(now, (int, float)) and float(now) > 0.0:
+        out["now_unix"] = float(now)
+    ident = state.get("identity")
+    if isinstance(ident, dict) and ident:
+        out["identity"] = ident
+    out["fallen"] = fallen_from_snapshot(state)
+    if include_camera_thumbs:
+        _merge_cricket_camera_thumbs(out, state)
+    return out
+
+
+def _merge_cricket_camera_thumbs(snap: dict[str, Any], state: dict[str, Any]) -> None:
+    src_topics = state.get("topics")
+    src_perc = src_topics.get("perception") if isinstance(src_topics, dict) else None
+    src_cams = src_perc.get("cameras") if isinstance(src_perc, dict) else None
+    if not isinstance(src_cams, dict):
+        return
+    dst_topics = snap.get("topics")
+    if not isinstance(dst_topics, dict):
+        dst_topics = {}
+        snap["topics"] = dst_topics
+    dst_perc = dst_topics.get("perception")
+    if not isinstance(dst_perc, dict):
+        dst_perc = {}
+        dst_topics["perception"] = dst_perc
+    dst_cams = dst_perc.get("cameras")
+    if not isinstance(dst_cams, dict):
+        dst_cams = {}
+        dst_perc["cameras"] = dst_cams
+    for name, entry in src_cams.items():
+        if not isinstance(name, str) or not isinstance(entry, dict):
+            continue
+        thumb = entry.get("thumbnail_jpeg_b64")
+        if not isinstance(thumb, str) or not thumb:
+            continue
+        dest = dst_cams.get(name)
+        if not isinstance(dest, dict):
+            dest = {}
+            dst_cams[name] = dest
+        if dest.get("thumbnail_jpeg_b64"):
+            continue
+        dest["thumbnail_jpeg_b64"] = thumb
+        for key in ("role", "width", "height"):
+            if key in entry and key not in dest:
+                dest[key] = entry[key]
+
+
+def cricket_tunneled_camera_thumb_b64(source: str) -> str | None:
+    """Base64 JPEG for ``source`` from tunneled cricket ``/api/state``, or ``None``."""
+    state = cricket_tunneled_state()
+    topics = state.get("topics") if isinstance(state, dict) else None
+    perc = topics.get("perception") if isinstance(topics, dict) else None
+    cams = perc.get("cameras") if isinstance(perc, dict) else None
+    entry = cams.get(source) if isinstance(cams, dict) else None
+    b64 = entry.get("thumbnail_jpeg_b64") if isinstance(entry, dict) else None
+    if not isinstance(b64, str) or not b64:
+        return None
+    return b64
+
+
 def remote_graph_running() -> bool:
-    """True when cricket's container has an ``openral deploy sim`` occupant."""
+    """True when cricket's container has a live deploy-sim occupant.
+
+    Prefer the tunneled cricket dashboard ingest (``:14318/api/state``)
+    when that tunnel is up — it is the same proof the cameras use, and
+    avoids a 12 s SSH pile-up. Fall back to ``docker exec pgrep`` over SSH.
+    """
+    ingest = cricket_tunneled_ingest_live()
+    if ingest is not None:
+        return ingest
     container = shlex.quote(cricket_container_name())
     remote = f"docker exec {container} pgrep -f {shlex.quote(DEPLOY_SIM_PGREP)}"
     proc = _ssh_run(remote, timeout_s=_SSH_STATUS_TIMEOUT_S)
     if proc.returncode not in {0, 1}:
         return False
     return any(line.strip().isdigit() for line in proc.stdout.splitlines())
+
+
+def cricket_demo_block_reason() -> str | None:
+    """Laptop-only reason a demo ``ros2`` call must not run locally.
+
+    ``None`` on cricket (local ``ros2``) or on a laptop when the remote graph
+    is up (a stale SSH-race ``start_error`` is cleared). Otherwise
+    ``start_error`` (credits / SSH) or :data:`CRICKET_DISCONNECTED_MSG`.
+    Never a PATH hint.
+    """
+    if on_cricket_host():
+        return None
+    if cricket_graph_running():
+        watch = get_watch()
+        if watch is not None:
+            watch.set_start_error(None)
+        return None
+    watch = get_watch()
+    start_err = watch.start_error() if watch is not None else None
+    if start_err:
+        return start_err
+    return CRICKET_DISCONNECTED_MSG
+
+
+def is_cricket_unavailable_message(text: str) -> bool:
+    """True when ``text`` is a cricket-down operator reason (not a PATH hint)."""
+    if text == CRICKET_DISCONNECTED_MSG:
+        return True
+    lower = text.lower()
+    if "not on path" in lower or "source the workspace" in lower:
+        return False
+    return any(
+        token in lower
+        for token in (
+            "credit",
+            "insufficient",
+            "quota",
+            "billing",
+            "can't reach cricket",
+            "cricket is disconnected",
+        )
+    )
+
+
+def remote_ros2_argv(args: Sequence[str]) -> list[str]:
+    """``ssh`` + ``docker exec`` argv that runs ``ros2`` inside cricket."""
+    domain = os.environ.get("ROS_DOMAIN_ID", "77").strip() or "77"
+    ros2_cmd = " ".join(shlex.quote(part) for part in ("ros2", *args))
+    inner = (
+        "set +e; "
+        "[ -f /opt/ros/jazzy/setup.bash ] && . /opt/ros/jazzy/setup.bash; "
+        f"[ -f {_CONTAINER_REPO}/install/setup.bash ] && "
+        f". {_CONTAINER_REPO}/install/setup.bash; "
+        f"export ROS_DOMAIN_ID={shlex.quote(domain)}; "
+        f"exec {ros2_cmd}"
+    )
+    remote = f"docker exec {shlex.quote(cricket_container_name())} bash -lc {shlex.quote(inner)}"
+    return [*cricket_ssh_argv(), "--", remote]
+
+
+def ros2_command_argv(args: Sequence[str]) -> tuple[list[str], str | None]:
+    """Build ``ros2`` argv for this dashboard role.
+
+    On cricket the binary is local. On a laptop the call is SSH +
+    ``docker exec`` when the remote graph is up; otherwise the error is
+    a disconnected / ``start_error`` string — never a local PATH hint.
+    """
+    if not on_cricket_host():
+        blocked = cricket_demo_block_reason()
+        if blocked is not None:
+            return [], blocked
+        return remote_ros2_argv(args), None
+    ros2 = shutil.which("ros2")
+    if ros2 is None:
+        return [], _ROS2_PATH_HINT
+    return [ros2, *args], None
+
+
+async def spawn_ros2(
+    args: Sequence[str],
+    *,
+    stdout: int | None = asyncio.subprocess.PIPE,
+    stderr: int | None = asyncio.subprocess.PIPE,
+) -> tuple[asyncio.subprocess.Process | None, str | None]:
+    """Spawn ``ros2`` locally on cricket or remotely from a laptop."""
+    argv, err = await asyncio.to_thread(ros2_command_argv, args)
+    if err is not None:
+        return None, err
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdout=stdout,
+            stderr=stderr,
+            env=os.environ.copy(),
+        )
+    except FileNotFoundError:
+        if on_cricket_host():
+            return None, _ROS2_PATH_HINT
+        return None, CRICKET_DISCONNECTED_MSG
+    return proc, None
 
 
 def _brev_instance_status() -> str | None:
@@ -639,11 +952,26 @@ def _brev_instance_status() -> str | None:
     return parse_brev_ls(payload, instance=cricket_instance_name())
 
 
+def _brev_operator_error(stdout: str, stderr: str) -> str | None:
+    """Return a credits/quota/billing snippet when Brev refused start."""
+    blob = f"{stdout}\n{stderr}".strip()
+    if not blob:
+        return None
+    lowered = blob.lower()
+    if not any(token in lowered for token in ("credit", "insufficient", "quota", "billing")):
+        return None
+    return blob[-800:]
+
+
 def _brev_start_if_needed() -> tuple[bool, str]:
     status = _brev_instance_status()
     if status is not None and "RUN" in status:
         return True, "already running"
     proc = _run(["brev", "start", cricket_instance_name()], timeout_s=300.0)
+    credit_err = _brev_operator_error(proc.stdout, proc.stderr)
+    if credit_err is not None:
+        _logger.warning("cricket.brev_start credits err=%s", credit_err[-400:])
+        return False, credit_err
     if proc.returncode != 0:
         # Already-running instances may error; SSH is the real gate.
         _logger.warning("cricket.brev_start out=%s err=%s", proc.stdout[-400:], proc.stderr[-400:])
@@ -754,6 +1082,8 @@ export PYOPENGL_PLATFORM=egl
 export OPENRAL_CRICKET_INSTANCE="${{OPENRAL_CRICKET_INSTANCE:-abundant-turquoise-cricket}}"
 export OPENRAL_CRICKET_CONTAINER="${{OPENRAL_CRICKET_CONTAINER:-openral-jazzy-go2}}"
 export OPENRAL_CRICKET_HALT_HOST="${{OPENRAL_CRICKET_HALT_HOST:-1}}"
+export OPENRAL_CRICKET_ROLE=host
+export OPENRAL_CRICKET_IDLE_S="${{OPENRAL_CRICKET_IDLE_S:-0}}"
 : >> /tmp/openral_demo_deploy.log
 echo "attach scene={scene_q} robot={robot_q}" >> /tmp/openral_demo_deploy.log
 nohup setsid xvfb-run -a env MUJOCO_GL=egl PYOPENGL_PLATFORM=egl \\
@@ -762,6 +1092,8 @@ nohup setsid xvfb-run -a env MUJOCO_GL=egl PYOPENGL_PLATFORM=egl \\
   OPENRAL_CRICKET_INSTANCE="$OPENRAL_CRICKET_INSTANCE" \\
   OPENRAL_CRICKET_CONTAINER="$OPENRAL_CRICKET_CONTAINER" \\
   OPENRAL_CRICKET_HALT_HOST="$OPENRAL_CRICKET_HALT_HOST" \\
+  OPENRAL_CRICKET_ROLE=host \\
+  OPENRAL_CRICKET_IDLE_S="$OPENRAL_CRICKET_IDLE_S" \\
   {bin_q} deploy sim --config {scene_q} --dashboard --foxglove \\
   >> /tmp/openral_demo_deploy.log 2>&1 &
 echo attach_pid=$! >> /tmp/openral_demo_deploy.log
@@ -810,6 +1142,110 @@ def _spawn_remote_graph() -> tuple[bool, str]:
     return True, meta["label"]
 
 
+def laptop_repo_root() -> Path:
+    """Checkout that holds the spring-jump rSkill (``OPENRAL_REPO_ROOT`` or walk)."""
+    override = os.environ.get("OPENRAL_REPO_ROOT", "").strip()
+    if override:
+        return Path(override)
+    marker = Path("rskills") / "rsl-rl-onnx-go2-spring-jump" / "rskill.yaml"
+    for parent in Path(__file__).resolve().parents:
+        if (parent / marker).is_file():
+            return parent
+    return Path.cwd()
+
+
+def sync_cricket_scripted_hop(*, repo: Path | None = None) -> tuple[bool, str]:
+    """Copy spring-jump rSkill + this-branch rsl_rl_onnx into cricket.
+
+    Apply hop uses ``OpenRAL/rskill-rsl_rl_onnx-go2-spring_jump-fp32``.
+    Cricket's checkout often has only mjlab hop / an old adapter that
+    cannot load ``constants`` / ``joystick_buttons`` / frame-major
+    history. Existing dest values on disk are overwritten. Reload still
+    required so the runner re-imports the adapter.
+    """
+    root = repo if repo is not None else laptop_repo_root()
+    missing = [rel for rel in CRICKET_HOP_SYNC_RELPATHS if not (root / rel).exists()]
+    if missing:
+        return False, f"hop files missing locally: {missing}"
+    packed = subprocess.run(
+        ["tar", "czf", "-", *CRICKET_HOP_SYNC_RELPATHS],
+        cwd=root,
+        capture_output=True,
+        check=False,
+    )
+    if packed.returncode != 0:
+        err = packed.stderr.decode(errors="replace").strip() or "tar failed"
+        return False, err
+    decode = "base64 -d | tar xzf - -C " + _CONTAINER_REPO
+    container = shlex.quote(cricket_container_name())
+    proc = _ssh_run(
+        f"docker exec -i {container} bash -lc {shlex.quote(decode)}",
+        timeout_s=60.0,
+        input_text=base64.b64encode(packed.stdout).decode("ascii"),
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "cricket hop sync failed").strip()
+        return False, detail
+    return True, "hop synced"
+
+
+def spawn_remote_scene_reload(preset_id: str) -> tuple[bool, str]:
+    """SSH cricket's demo reload script. Never runs ``deploy sim`` on the laptop.
+
+    Same file + character-class ``pgrep`` as on-host load. Attach never
+    kills; this path must, or UNIT cannot switch twins.
+    """
+    blocked = cricket_demo_block_reason()
+    if blocked is None:
+        synced, sync_detail = sync_cricket_scripted_hop()
+        if not synced:
+            blocked = sync_detail
+    if blocked is not None:
+        return False, blocked
+    from openral_observability.dashboard.demo_controls import (
+        DEMO_PRESETS,
+        _build_demo_reload_script,
+    )
+
+    meta = DEMO_PRESETS.get(preset_id)
+    if meta is None:
+        return False, f"unknown preset {preset_id!r}"
+    repo = Path(_CONTAINER_REPO)
+    script = _build_demo_reload_script(
+        preset_id=preset_id,
+        repo=repo,
+        scene=repo / meta["scene"],
+        robot_id=meta["robot_id"],
+        domain=os.environ.get("ROS_DOMAIN_ID", "77").strip() or "77",
+        openral_bin=f"{_CONTAINER_REPO}/.venv/bin/openral",
+    )
+    container = shlex.quote(cricket_container_name())
+    path = _RELOAD_SCRIPT_REMOTE
+    tee = _ssh_run(
+        f"docker exec -i {container} tee {shlex.quote(path)}",
+        timeout_s=20.0,
+        input_text=script,
+    )
+    if tee.returncode != 0:
+        detail = (tee.stderr or tee.stdout or "failed to write reload script").strip()
+        return False, detail
+    chmod = _ssh_run(
+        f"docker exec {container} chmod 700 {shlex.quote(path)}",
+        timeout_s=10.0,
+    )
+    if chmod.returncode != 0:
+        detail = (chmod.stderr or chmod.stdout or "chmod reload script failed").strip()
+        return False, detail
+    run = _ssh_run(
+        f"docker exec -d {container} bash {shlex.quote(path)}",
+        timeout_s=20.0,
+    )
+    if run.returncode != 0:
+        detail = (run.stderr or run.stdout or "reload exec failed").strip()
+        return False, detail
+    return True, meta["label"]
+
+
 def _laptop_attach_running_instance() -> dict[str, Any]:
     """Docker start + tunnels + attach-if-down. Does not ``brev start``."""
     docker_ok, docker_detail = _docker_start()
@@ -847,15 +1283,29 @@ def _laptop_attach_running_instance() -> dict[str, Any]:
 
 def _laptop_start_job() -> None:
     """Background: brev start a stopped box, then attach."""
+    watch = get_watch()
     try:
-        _brev_start_if_needed()
+        ok, detail = _brev_start_if_needed()
+        if not ok:
+            _logger.warning("cricket.laptop_start brev failed err=%s", detail)
+            if watch is not None:
+                watch.set_start_error(detail)
+            return
         if not _wait_for_ssh():
+            msg = "can't reach cricket — SSH never came up"
             _logger.warning("cricket.laptop_start ssh never came up")
+            if watch is not None:
+                watch.set_start_error(msg)
             return
         result = _laptop_attach_running_instance()
         if not result.get("ok"):
-            _logger.warning("cricket.laptop_start attach failed err=%s", result.get("error"))
+            err = str(result.get("error") or "laptop attach failed")
+            _logger.warning("cricket.laptop_start attach failed err=%s", err)
+            if watch is not None:
+                watch.set_start_error(err)
             return
+        if watch is not None:
+            watch.set_start_error(None)
         _logger.warning(
             "cricket.laptop_start done already_running=%s spawned=%s",
             result.get("already_running"),
@@ -863,6 +1313,11 @@ def _laptop_start_job() -> None:
         )
     except (OSError, subprocess.SubprocessError, RuntimeError, json.JSONDecodeError):
         _logger.exception("cricket.laptop_start failed")
+        if watch is not None:
+            watch.set_start_error("laptop start failed")
+    finally:
+        if watch is not None:
+            watch.reset_start_guard()
 
 
 def _spawn_laptop_start() -> bool:
@@ -1046,11 +1501,18 @@ def _start_already_running_body(*, detail: str) -> dict[str, Any]:
 
 
 async def start_cricket_response() -> JSONResponse:
-    """Start or attach cricket. Laptop path may ``brev start``; never a no-op."""
+    """Start or attach cricket. Laptop path may ``brev start``; never a no-op.
+
+    Operator Start is recovery: it re-arms idle and clears an idle-End
+    guard so a later click is not swallowed after auto-End.
+    """
     denied = _write_controls_or_403()
     if denied is not None:
         return denied
     touch_idle()
+    watch = get_watch()
+    if watch is not None:
+        watch.reset_end_guard()
     if on_cricket_host():
         return await _start_cricket_on_host()
     return await _start_cricket_from_laptop()
@@ -1058,17 +1520,17 @@ async def start_cricket_response() -> JSONResponse:
 
 async def _start_cricket_on_host() -> JSONResponse:
     """Bring the deploy-sim graph up if this instance is already reachable."""
-    if cricket_graph_running():
-        return JSONResponse(
-            _start_already_running_body(
-                detail=(
-                    "cricket graph already up — Apply a skill, or End Cricket "
-                    "to shut the GPU session. Foxglove "
-                    f"{cricket_viewer_payload()['foxglove_url']}"
-                )
+    running = await asyncio.to_thread(cricket_graph_running)
+    if running:
+        body = await asyncio.to_thread(
+            _start_already_running_body,
+            detail=(
+                "cricket graph already up — Apply a skill, or End Cricket "
+                "to shut the GPU session. Foxglove "
+                f"{cricket_viewer_payload()['foxglove_url']}"
             ),
-            status_code=200,
         )
+        return JSONResponse(body, status_code=200)
     from openral_observability.dashboard.demo_controls import (
         DEMO_PRESETS,
         _spawn_scene_reload,
@@ -1105,16 +1567,31 @@ async def _start_cricket_from_laptop() -> JSONResponse:
     ssh_ok = await asyncio.to_thread(_ssh_ok)
     if not ssh_ok:
         if watch is not None and not watch.begin_start():
-            body = {
-                "status": "accepted",
-                "accepted": True,
-                "action": "start",
-                "already_running": False,
-                "role": "laptop",
-                "detail": "Start Cricket already in progress",
-                **cricket_viewer_payload(),
-            }
-            return JSONResponse(body, status_code=202)
+            prior = watch.start_error()
+            viewers = cricket_viewer_payload()
+            if prior:
+                body = {
+                    "error": prior,
+                    "start_error": prior,
+                    "action": "start",
+                    "role": "laptop",
+                    **viewers,
+                }
+                status = 400
+            else:
+                body = {
+                    "status": "accepted",
+                    "accepted": True,
+                    "action": "start",
+                    "already_running": False,
+                    "role": "laptop",
+                    "start_in_progress": True,
+                    "start_error": None,
+                    "detail": "Start Cricket already in progress",
+                    **viewers,
+                }
+                status = 202
+            return JSONResponse(body, status_code=status)
         ok = await asyncio.to_thread(_spawn_laptop_start)
         if not ok:
             if watch is not None:
@@ -1135,6 +1612,7 @@ async def _start_cricket_from_laptop() -> JSONResponse:
                 "role": "laptop",
                 "can_start_from_cold": True,
                 "start_in_progress": True,
+                "start_error": None,
                 "detail": (
                     f"Starting `{instance}` (`brev start`, docker, tunnels). "
                     f"Foxglove {fox['foxglove_url']}; cricket dashboard "
@@ -1161,12 +1639,11 @@ async def _start_cricket_from_laptop() -> JSONResponse:
     if result.get("already_running"):
         if watch is not None:
             watch.reset_start_guard()
-        return JSONResponse(
-            _start_already_running_body(
-                detail=str(result.get("detail") or "cricket graph already up")
-            ),
-            status_code=200,
+        body = await asyncio.to_thread(
+            _start_already_running_body,
+            detail=str(result.get("detail") or "cricket graph already up"),
         )
+        return JSONResponse(body, status_code=200)
     preset = str(result.get("preset") or _preset_for_running_robot())
     _logger.warning("cricket.laptop_attach scheduled preset=%s", preset)
     return JSONResponse(

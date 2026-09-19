@@ -1,0 +1,90 @@
+# rSkill manifest — scripted Go2 hop (feet leave the ground)
+# Adapter: openral_sim.policies.mock  (model_family: zero)
+#
+# The mjlab hop ONNX (rsl-rl-onnx-go2-hop-flat) is a planted crouch on
+# this torque-motor HAL (headless air_ticks=0). Dashboard hop Apply is
+# rsl-rl-onnx-go2-spring-jump. This skill stays in-tree as a fallback
+# crouch-extend-tuck-land under walk PD.
+# kind stays `vla` so execute_rskill / make_policy dispatch through
+# the existing family token.
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-zero-go2-hop-fp32"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "vla"
+model_family: "zero"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+embodiment_tags:
+  - "go2"
+  # Same 12-D rows on the 19-DoF composite via hold-pad 12→19.
+  - "go2_z1"
+
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+# Numpy scripted hop — no torch. Schema has no "numpy" runtime; pytorch is
+# the declared default and the adapter never loads a graph.
+runtime: "pytorch"
+quantization:
+  dtype: "fp32"
+  backend: "pytorch"
+weights_uri: "local://rskills/rskill-zero-go2-hop-fp32"
+
+# ── Execution semantics ────────────────────────────────────────────────────
+chunk_size: 1
+latency_budget:
+  per_chunk_ms: 20.0
+  max_execution_s: 10.0
+
+# Finite horizon so ExecuteRskill succeeds after a few hop cycles
+# (VLAs otherwise run until deadline abort).
+policy_extras:
+  action_dim: 12
+  gait: "jump"
+  dt: 0.02
+  horizon_s: 6.0
+  hold_targets: [0.1, 0.8, -1.5, -0.1, 0.8, -1.5, 0.1, 1.0, -1.5, -0.1, 1.0, -1.5]
+  # Crouch-extend-tuck-land. A 0.16 s extend aborted at takeoff (calves
+  # still bent) so the dog only bounced. These times let the push finish,
+  # then fold the feet up in flight under walk PD.
+  jump_crouch: [0.1, 1.70, -2.65, -0.1, 1.70, -2.65, 0.1, 1.90, -2.65, -0.1, 1.90, -2.65]
+  jump_extend: [0.1, 0.05, -0.84, -0.1, 0.05, -0.84, 0.1, 0.10, -0.84, -0.1, 0.10, -0.84]
+  jump_tuck: [0.1, 1.40, -2.30, -0.1, 1.40, -2.30, 0.1, 1.60, -2.30, -0.1, 1.60, -2.30]
+  jump_crouch_s: 0.30
+  jump_extend_s: 0.24
+  jump_tuck_s: 0.22
+  jump_recover_s: 0.40
+
+# Hop stand (same 12-D as GO2_HOP_JOINT_TARGETS). ResetToPose sits the
+# feet on z=0 and keeps walk PD — Isaac hop kp=20 cannot push off.
+starting_pose: [0.1, 0.8, -1.5, -0.1, 0.8, -1.5, 0.1, 1.0, -1.5, -0.1, 1.0, -1.5]
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+paper_url: "https://github.com/google-deepmind/mujoco_menagerie/tree/main/unitree_go2"
+
+description: >
+  Scripted 12-D joint-position hop for Unitree Go2: crouch, extend, tuck,
+  land. In-tree fallback. Dashboard hop Apply is gym spring_jump
+  (rsl-rl-onnx-go2-spring-jump). Feet leave the go2_walk floor (measured
+  air_ticks≈45, foot-bottom ≈0.25 m, z_max≈0.47 m) under HAL walk PD.
+  Not the mjlab hop ONNX — that checkpoint only crouches on this
+  torque-motor twin. Go2+Z1 hold-pads 12→19.
+
+actions:
+  - "navigate"
+objects:
+  - "terrain"
+scenes:
+  - "flat"
+
+action_contract:
+  dim: 12
+  representation: "joint_positions"
+  joint_units: "radians"

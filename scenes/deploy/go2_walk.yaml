@@ -24,9 +24,16 @@ hal:
     # The gait dies on stale proprio, and it is a cliff, not a slope. Measured
     # offline against the real ONNX graph (50 Hz, 15 s at 0.5 m/s): 0-20 ms of
     # observation age walks 5-6 m upright; 40 ms falls every time. The default
-    # 30 Hz publish (33 ms between samples, before the topic + WorldState hop)
-    # sits the wrong side of that. Publishing proprio at 200 Hz keeps the
-    # freshest sample ~5 ms old so the policy sees what it trained on.
+    # 30 Hz publish (33 ms between samples, before the DDS hop and the
+    # aggregator's callback scheduling) sits the wrong side of that. Publishing
+    # proprio at 200 Hz keeps the freshest sample ~5 ms old so the policy sees
+    # what it trained on — confirmed live at a median 5.1 ms age.
+    # Independently reproduced on the go2_z1 composite over randomised trials
+    # (8/8 at 20 ms, 1/8 at 40 ms, 0/8 at 60 ms) by
+    # `tools/go2_z1_mass_balance.py stale`; see
+    # `docs/reference/go2-z1-mass-balance.md`. The WorldState *publish* rate
+    # (`publish_rate_hz_fast`, 30 Hz) is NOT in this path — the skill runner
+    # reads the aggregator in-process.
     # Costs sim throughput, which a locomotion bench can afford; `go2_bench`
     # is a HAL pipe proof and keeps the default.
     publish_rate_hz: 200.0

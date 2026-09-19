@@ -1,0 +1,94 @@
+# rSkill manifest — mjlab hop ONNX for the 12-DoF Go2
+# Wraps: Renkunzhao/legged_rl_deploy policies/go2/mjlab/hop  (license unknown)
+# Adapter: openral_sim.policies.rsl_rl_onnx  (model_family: rsl_rl_onnx)
+#
+# Same family as velocity-flat. Different obs: 47-D × 10 frames = 470-D,
+# gait_phase_2 (1.5 s), euler RPY, action scale 0.25. NOT SmolVLA.
+# kind stays `vla` so execute_rskill / make_policy dispatch through the
+# existing family token. Weights are fetched at load, never vendored.
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-rsl_rl_onnx-go2-hop_flat-fp32"
+version: "0.1.0"
+license: "unknown"
+role: "s1"
+kind: "vla"
+model_family: "rsl_rl_onnx"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+embodiment_tags:
+  - "go2"
+  # Same 12-D ONNX on the 19-DoF composite via hold-pad 12→19. Hop quality
+  # on the armed twin is unclaimed — the policy trained on the bare dog.
+  - "go2_z1"
+
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "onnx"
+quantization:
+  dtype: "fp32"
+  backend: "onnx"
+# Local rSkill dir (deploy.yaml in-tree). policy.onnx is not in git;
+# extras.onnx_url fetches it into ~/.cache/openral/rsl_rl_onnx/.
+weights_uri: "local://rskills/rsl-rl-onnx-go2-hop-flat"
+
+# ── Execution semantics ────────────────────────────────────────────────────
+chunk_size: 1
+latency_budget:
+  per_chunk_ms: 20.0
+  max_execution_s: 20.0
+
+# Joystick still [vx, vy, yaw_rate]. Default is in-place hop (zeros).
+# Per-call override via ExecuteRskill.goal_params_json.
+policy_extras:
+  velocity_commands: [0.0, 0.0, 0.0]
+  onnx_filename: "policy.onnx"
+  deploy_yaml: "params/deploy.yaml"
+  onnx_url: "https://raw.githubusercontent.com/Renkunzhao/legged_rl_deploy/master/policies/go2/mjlab/hop/policy.onnx"
+
+goal_params_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    velocity_commands:
+      type: array
+      minItems: 3
+      maxItems: 3
+      items:
+        type: number
+      description: >
+        Isaac joystick [vx, vy, yaw_rate] in m/s and rad/s. Overrides
+        policy_extras.velocity_commands for this execute_rskill / verify
+        call. Omit to keep the in-place (zeros) default.
+
+# mjlab hop default_joint_pos (HAL / menagerie order). Front thighs 0.8,
+# rear 1.0, calves −1.5; hip signs are the opposite of the Hub walk stand.
+starting_pose: [0.1, 0.8, -1.5, -0.1, 0.8, -1.5, 0.1, 1.0, -1.5, -0.1, 1.0, -1.5]
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+paper_url: "https://github.com/Renkunzhao/legged_rl_deploy"
+
+description: >
+  mjlab rsl-rl ONNX hop for the 12-DoF Go2. Loads policy.onnx (fetched
+  at runtime; not vendored) plus in-tree params/deploy.yaml and emits
+  absolute JOINT_POSITION targets. Observation is 470-D (gait phase +
+  command + ang vel + euler RPY + joints + last action, history 10).
+  License of the ONNX is unknown (loader warns ``rskill.unknown_license``;
+  ``is_commercial_use_allowed`` is false). Does not claim hop quality.
+
+actions:
+  - "navigate"
+objects:
+  - "terrain"
+scenes:
+  - "flat"
+
+action_contract:
+  dim: 12
+  representation: "joint_positions"
+  joint_units: "radians"

@@ -91,6 +91,7 @@ def spawn_dashboard(
     link_host = "localhost" if host in {"0.0.0.0", "::", ""} else host
     url = f"http://{link_host}:{port}/"
     healthz = f"{url}healthz"
+    ui = f"{url}simple"
 
     child = subprocess.Popen(
         [exe_path, "dashboard", "--host", host, "--port", str(port)],
@@ -115,7 +116,7 @@ def spawn_dashboard(
         os.environ[_ENV_ENDPOINT] = f"http://{link_host}:{port}"
         os.environ[_ENV_PROTOCOL] = "http/protobuf"
         print(
-            f"OpenRAL dashboard attached: {url}  (child process; will exit with this command)",
+            f"OpenRAL dashboard attached: {ui}  (child process; will exit with this command)",
             file=sys.stderr,
             flush=True,
         )

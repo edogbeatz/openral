@@ -243,6 +243,25 @@ ships; the broader ladder (retry → param-tweak → substitute-skill → goal-r
 human-handoff, CLAUDE.md §3) is partially realized — the substitute/replan rungs
 are still being built out.
 
+### Opt-in TypeSafe gate
+
+When `OPENRAL_TYPESAFE=1` and `TYPESAFE_API_KEY` are set (and
+`just sync --group typesafe` has installed `typesafe-sdk`), the LLM worker
+runs one TypeSafe System One call **before** `select_tool`. Atomic questions
+(safety Noul, handler Choice, skill Choice, optional walk/arm extras keyed
+off `goal_params_schema`) share the operator prompt + closed palette as
+state. Code in `openral_reasoner.typesafe_policy` combines the answers:
+
+- high-confidence walk/arm → skip the LLM, dispatch `ExecuteRskillTool`
+  (joystick / named pose filled in Python)
+- `asks_bypass_safety` above the action threshold → `WaitTool` (fail closed)
+- otherwise fall through to the existing LLM path, optionally shrinking
+  the ExecuteRskill palette to the top skill
+
+Off by default. A missing SDK or a failed API call **fails open** to the LLM
+for routing; the C++ safety kernel is unchanged. TypeSafe "System One" is
+not OpenRAL S1.
+
 ---
 
 ## Observability
@@ -265,6 +284,10 @@ source install/setup.bash
 
 export OPENRAL_REASONER_MODEL=claude-opus-4-8
 export OPENRAL_REASONER_API_KEY=sk-ant-...
+# Optional: TypeSafe judgment sidecar (not required)
+# just sync --group typesafe
+# export OPENRAL_TYPESAFE=1
+# export TYPESAFE_API_KEY=...
 
 ros2 run openral_reasoner_ros reasoner_node
 ros2 lifecycle set /openral_reasoner configure

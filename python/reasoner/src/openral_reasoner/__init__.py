@@ -75,6 +75,21 @@ from openral_reasoner.tool_use import (
     render_robot_context_prompt,
     resolve_reasoner_system_prompt,
 )
+from openral_reasoner.typesafe_gate import (
+    TypeSafeGate,
+    apply_typesafe_to_tick,
+    build_typesafe_gate_from_env,
+    is_typesafe_enabled,
+    restrict_execute_skills,
+)
+from openral_reasoner.typesafe_policy import (
+    TypeSafeDecision,
+    decide_reasoner_typesafe,
+)
+from openral_reasoner.typesafe_questions import (
+    build_reasoner_questions,
+    build_reasoner_state,
+)
 
 __all__ = [
     "CASCADE_PROMPT_SOURCES",
@@ -109,19 +124,28 @@ __all__ = [
     "TaskState",
     "ToolPalette",
     "ToolUseClient",
+    "TypeSafeDecision",
+    "TypeSafeGate",
+    "apply_typesafe_to_tick",
+    "build_reasoner_questions",
+    "build_reasoner_state",
     "build_tool_palette",
     "build_tool_use_client_from_env",
+    "build_typesafe_gate_from_env",
+    "decide_reasoner_typesafe",
     "evaluate_task_verdict",
     "find_cosmos3_sidecar_script",
     "format_recall_object_result",
     "format_resolve_place_result",
     "format_search_frontier",
+    "is_typesafe_enabled",
     "load_ladder_state",
     "plan_active_search",
     "recall_object_tool_to_query",
     "render_robot_context_prompt",
     "resolve_place_tool_to_query",
     "resolve_reasoner_system_prompt",
+    "restrict_execute_skills",
     "run_spatial_query",
     "run_spatial_query_detailed",
     "save_ladder_state",

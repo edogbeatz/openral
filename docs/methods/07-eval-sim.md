@@ -334,17 +334,21 @@ _Greenfield robot-agnostic native scene: a push-cube-to-goal task on a configura
   - `build_tabletop_push_scene(env_cfg) -> _TabletopPushRollout` — Scene factory registered as `SCENES.register("tabletop_push")(build_tabletop_push_scene)` (free-axis). Composes the model, resolves the robot's actuator→joint transmissions for state read + action clipping, and caches the cube body/freejoint + goal site indices. Raises `ROSConfigError` when `robot_id` has no registered manifest. (L344)
 
 #### `python/sim/src/openral_sim/policies/mock.py`
-- `class _MockSim` — Tiny gym-like env for tests. (L37)
-- `class _ZeroPolicy` — N-D scripted hold (optional trot) plus named-pose overlay for arm-command rSkills. `set_named_pose` / `set_arm_targets` write trailing slots so a 7-D Z1 pose lands on a 19-D Go2+Z1 hold. (L165)
-- `class _RandomPolicy` — Fixed-seed Gaussian samples. (L265)
-- `_coerce_int(value, default) -> int` (L94)
-- `_coerce_float(value, default) -> float` (L105)
-- `_build_mock_scene(env_cfg) -> _MockSim` (L117)
-- `_resolve_action_dim(env_cfg) -> int` (L288)
-- `_named_poses(raw) -> dict[str, list[float]]` — Parse `poses:` maps. (L355)
-- `apply_zero_pose_override(target, goal_params_json) -> NDArray | None` — `ExecuteRskill.goal_params_json` `{pose|arm}` onto a zero adapter; empty payload restores the load-time hold; no-op on non-zero adapters. (L393)
-- `_build_zero_policy(env_cfg) -> _ZeroPolicy` (L451)
-- `_build_random_policy(env_cfg) -> _RandomPolicy` (L486)
+- `class _MockSim` — Tiny gym-like env for tests. (L165)
+- `class _ZeroPolicy` — N-D scripted hold (optional trot / hop) plus named-pose overlay for arm-command rSkills. `gait: jump` overlays a measured crouch-extend-tuck-land cycle on the leading 12 Go2 legs (feet leave the `go2_walk` floor under walk PD; `policy_extras.jump_*` overrides poses and phase times). `set_named_pose` / `set_arm_targets` write trailing slots so a 7-D Z1 pose lands on a 19-D Go2+Z1 hold. (L293)
+- `_jump_phase_ticks(*, dt) -> tuple[int, int, int, int]` — Integer crouch / extend / tuck / recover tick counts. (L105)
+- `_jump_leg_targets(tick, *, dt) -> NDArray` — One 12-D hop-cycle row (crouch 0.30 s / extend 0.24 s / tuck 0.22 s / land 0.40 s). (L123)
+- `class _RandomPolicy` — Fixed-seed Gaussian samples. (L422)
+- `_coerce_int(value, default) -> int` (L222)
+- `_coerce_float(value, default) -> float` (L233)
+- `_build_mock_scene(env_cfg) -> _MockSim` (L245)
+- `_resolve_action_dim(env_cfg) -> int` (L445)
+- `_leg_row(extra, file_cfg, key) -> NDArray | None` — Optional 12-D jump pose from `policy_extras`. (L512)
+- `_resolve_jump(extra, file_cfg)` — Crouch / extend / tuck poses and phase times. (L525)
+- `_named_poses(raw) -> dict[str, list[float]]` — Parse `poses:` maps. (L555)
+- `apply_zero_pose_override(target, goal_params_json) -> NDArray | None` — `ExecuteRskill.goal_params_json` `{pose|arm}` onto a zero adapter; empty payload restores the load-time hold; no-op on non-zero adapters. (L593)
+- `_build_zero_policy(env_cfg) -> _ZeroPolicy` (L652)
+- `_build_random_policy(env_cfg) -> _RandomPolicy` (L697)
 
 #### `python/sim/src/openral_sim/policies/smolvla.py`
 - **Chunk-executor wiring (all chunked adapters)** — policy factories assign `build_chunk_executor(...)` to their adapter. SmolVLA/xVLA use `policy.predict_action_chunk`; pi05, GR00T, MolmoAct2, and OpenVLA pass family-specific producers. Declared chunk sizes are enforced for custom producers so telemetry equals actions consumed. Diffusion Policy remains excluded because it consumes observation history every tick; ZMQ sidecars remain synchronous because `REQ` sockets cannot be shared with a prefetch thread. **Real-Time Chunking** rides the same seam: an enabled `policy_extras.rtc` block (gated to `smolvla` + `pi05`, and requiring `chunk_prefetch`) makes `build_chunk_executor` install the policy's lerobot `RTCProcessor` and hand the executor an `ActionQueue` that blends each prefetched chunk into the executing one. The producer must accept the extra `inference_delay` / `prev_chunk_left_over` kwargs — `_PI05Adapter._chunk_forward(batch, **kwargs)` forwards them straight to `predict_action_chunk`; SmolVLA's default `predict_action_chunk` producer already takes them.
@@ -526,20 +530,28 @@ _Shared boot scaffolding for the out-of-process `rldx` VLA sidecar (a GR00T-N1.5
 - `venv_ptxas(venv) -> Path | None` — the `nvidia-cuda-nvcc-cu12` `ptxas` inside `venv`, or `None` when that wheel isn't installed (the normal case on x86_64). Split out of `make_isolated_env` so a sidecar execing by another route, or a test, can ask the same question.
 
 #### `python/sim/src/openral_sim/policies/rsl_rl_onnx.py`
-_Isaac Lab / Unitree rsl-rl ONNX locomotion adapter (`model_family: "rsl_rl_onnx"`). Proprio-only 12-D `JOINT_POSITION` — not a VLM and not SmolVLA. Reads observation term order, scales, `default_joint_pos`, `JointPositionAction.scale`, and `joint_ids_map` from the checkpoint `params/deploy.yaml` (first customer: `hf://diasAiMaster/unitree-go2-velocity-flat`). Builds the rsl-rl obs from HAL/world-state joints + base twist/pose + `policy_extras.velocity_commands` (default `[0.5, 0.0, 0.0]`; the reasoner prompt is **not** mapped to Isaac cmd). Per-call `[vx,vy,yaw]` override via `ExecuteRskill.goal_params_json` / `obs["velocity_commands"]` / `VLASpec.extra` without editing the rSkill YAML. Missing IMU/pose logs a one-shot `rsl_rl_onnx.obs_fallback` warning and uses zeros / identity gravity. Runs ONNX Runtime; decodes `default + raw * scale` and scatters to menagerie/HAL order. Unit-tested in `tests/unit/test_rsl_rl_onnx_adapter.py`._
-- `RSL_RL_ONNX_FAMILY: Final[str] = "rsl_rl_onnx"` — Canonical `ModelFamily` / `@POLICIES.register` token Acquire must put in `rskill.yaml`. (L69)
-- `class RslRlOnnxDeployConfig` — Parsed `params/deploy.yaml` (observation terms, default pose, action scale, `joint_ids_map`, `step_dt`). (L99)
-- `load_rsl_rl_deploy_yaml(path) -> RslRlOnnxDeployConfig` — Parse the Hub deploy YAML; observation keys come from the file, never invented. (L129)
-- `resolve_velocity_commands(extra, *, default=(0.5, 0.0, 0.0)) -> NDArray` — Joystick from `policy_extras`; prompt is ignored. (L221)
-- `velocity_override_from_goal_params(goal_params_json) -> NDArray | None` — Parse `ExecuteRskill.goal_params_json` `[vx, vy, yaw]`; `None` keeps the YAML default. (L254)
-- `apply_velocity_command_override(target, goal_params_json) -> NDArray | None` — Push the override onto an adapter / runner shim via `set_velocity_commands`; empty payload restores the load-time default on a resident skill. (L289)
-- `projected_gravity_from_quat_xyzw(quat_xyzw) -> NDArray` — Isaac Lab \(R^\top [0,0,-1]\). (L328)
-- `build_rsl_rl_observation(...) -> NDArray` — Concatenate terms in YAML order after `joint_ids_map` gather. (L345)
-- `decode_rsl_rl_joint_position(raw, config) -> NDArray` — `default + raw * scale`, scatter to robot order. (L420)
-- `resolve_rsl_rl_onnx_assets(spec, *, extra, manifest) -> (Path, Path)` — Local dir or Hub `hf_hub_download` of `policy.onnx` (+ `.data`) and `params/deploy.yaml`. (L590)
-- `write_zero_action_onnx(path, *, observation_dim, action_dim) -> Path` — Deterministic fixture graph for CI (`make_policy` without Hub weights). (L644)
-- `_RslRlOnnxAdapter` — `PolicyAdapter`; `set_velocity_commands(commands)` replaces the joystick (`None` restores YAML default); `step()` runs ONNX Runtime inside `inference_span(engine="onnx")` and prefers `obs["velocity_commands"]` when present. (L457)
-- `_build_rsl_rl_onnx(env_cfg) -> _RslRlOnnxAdapter` — `@POLICIES.register("rsl_rl_onnx")` factory. (L515)
+_Isaac Lab / Unitree rsl-rl ONNX locomotion adapter (`model_family: "rsl_rl_onnx"`). Proprio-only 12-D `JOINT_POSITION` — not a VLM and not SmolVLA. Reads observation term order, scales, history length, `history_layout`, `default_joint_pos`, `JointPositionAction.scale`, and `joint_ids_map` from the checkpoint `params/deploy.yaml`. First customer: `hf://diasAiMaster/unitree-go2-velocity-flat` (45-D, history 1). Second: `rskills/rsl-rl-onnx-go2-hop-flat` (mjlab hop, 47-D × 10 = 470-D, term-major, `gait_phase_2` + euler RPY, action scale 0.25; ONNX fetched via `policy_extras.onnx_url`, not vendored; planted crouch). Third: `rskills/rsl-rl-onnx-go2-spring-jump` (gym spring_jump, same 470-D width, **frame-major** + zero warmup, `constants` + joystick A; dashboard hop Apply). Builds the rsl-rl obs from HAL/world-state joints + base twist/pose + `policy_extras.velocity_commands` / `jump_trigger` (walk default `[0.5, 0.0, 0.0]`; the reasoner prompt is **not** mapped to Isaac cmd). Per-call `[vx,vy,yaw]` override via `ExecuteRskill.goal_params_json` / `obs["velocity_commands"]` / `VLASpec.extra` without editing the rSkill YAML. Last `coast_to_stand_s` (walk YAML 3.0; family default 3.0 if unset; `0` disables) of `horizon_s` / `max_execution_s` command `[0,0,0]` so the ONNX stands the dog before the goal ends — idle-hold of a mid-gait waypoint falls. Missing IMU/pose logs a one-shot `rsl_rl_onnx.obs_fallback` warning and uses zeros / identity gravity. Runs ONNX Runtime; decodes `default + raw * scale` and scatters to menagerie/HAL order. Unit-tested in `tests/unit/test_rsl_rl_onnx_adapter.py`._
+- `RSL_RL_ONNX_FAMILY: Final[str] = "rsl_rl_onnx"` — Canonical `ModelFamily` / `@POLICIES.register` token Acquire must put in `rskill.yaml`. (L94)
+- `class RslRlOnnxDeployConfig` — Parsed `params/deploy.yaml` (observation terms, default pose, action scale, `joint_ids_map`, `step_dt`, per-term history, `history_layout`, optional `gait_cycle_s` / `action_clip` / `constant_terms`). `observation_dim` includes history; `frame_dim` is one tick. (L138)
+- `load_rsl_rl_deploy_yaml(path) -> RslRlOnnxDeployConfig` — Parse the Hub / hop deploy YAML; observation keys come from the file, never invented. (L196)
+- `resolve_velocity_commands(extra, *, default=(0.5, 0.0, 0.0)) -> NDArray` — Joystick from `policy_extras`; prompt is ignored. (L297)
+- `in_coast_to_stand_window(*, elapsed_s, budget_s, coast_to_stand_s) -> bool` — True when the remaining episode budget is the stand-down window. (L330)
+- `coast_velocity_commands(commanded, *, elapsed_s, budget_s, coast_to_stand_s) -> NDArray` — Keep the joystick until the trailing window, then `[0,0,0]`. Idle-hold of a mid-gait waypoint dumps the Go2; this is the stand-down. (L346)
+- `resolve_coast_to_stand_s(extra, *, family=None) -> float | None` — `policy_extras.coast_to_stand_s`. Unset on `rsl_rl_onnx` defaults to 3.0 so a Hub walk still coasts; `0` disables. (L380)
+- `resolve_coast_budget_s(extra, *, horizon_s=None, max_execution_s=None) -> float | None` — `horizon_s` else `max_execution_s`. (L402)
+- `velocity_override_from_goal_params(goal_params_json) -> NDArray | None` — Parse `ExecuteRskill.goal_params_json` `[vx, vy, yaw]`; `None` keeps the YAML default. (L425)
+- `apply_velocity_command_override(target, goal_params_json) -> NDArray | None` — Push the override onto an adapter / runner shim via `set_velocity_commands`; empty payload restores the load-time default on a resident skill. (L460)
+- `projected_gravity_from_quat_xyzw(quat_xyzw) -> NDArray` — Isaac Lab \(R^\top [0,0,-1]\). (L499)
+- `euler_rpy_from_quat_xyzw(quat_xyzw) -> NDArray` — Hop `eulerZYX_rpy` term; matches `legged_rl_deploy` `quatToRpy`. (L516)
+- `gait_phase_2(*, step_index, step_dt, cycle_s) -> NDArray` — `[sin, cos](2π · t / T)` at policy tick `step_index`. (L538)
+- `build_rsl_rl_observation(...) -> NDArray` — Concatenate one **frame** in YAML order after `joint_ids_map` gather (`frame_dim`). (L556)
+- `stack_rsl_rl_term_major_history(current, previous, config) -> NDArray` — Pack term-major history (`oldest_first` / `repeat_first`); history-1 is a no-op. (L649)
+- `stack_rsl_rl_frame_major_history(current, previous, config) -> NDArray` — Pack Isaac Gym `frame_stack` history (`oldest_first` / `zero` warmup); history-1 is a no-op. (L714)
+- `decode_rsl_rl_joint_position(raw, config) -> NDArray` — `default + raw * scale`, scatter to robot order. (L777)
+- `resolve_rsl_rl_onnx_assets(spec, *, extra, manifest) -> (Path, Path)` — Local dir, Hub `hf_hub_download`, or `policy_extras.onnx_url` cache fetch of `policy.onnx` (+ `.data`) plus `params/deploy.yaml`. (L1015)
+- `write_zero_action_onnx(path, *, observation_dim, action_dim) -> Path` — Deterministic fixture graph for CI (`make_policy` without Hub weights). (L1081)
+- `_RslRlOnnxAdapter` — `PolicyAdapter`; `set_velocity_commands(commands)` replaces the joystick (`None` restores YAML default); `reset()` clears `last_action`, gait clock, and history; `step()` runs ONNX Runtime inside `inference_span(engine="onnx")`, prefers `obs["velocity_commands"]` when present, and zeros the joystick in the `coast_to_stand_s` window. (L814)
+- `_build_rsl_rl_onnx(env_cfg) -> _RslRlOnnxAdapter` — `@POLICIES.register("rsl_rl_onnx")` factory. (L923)
 
 #### `python/sim/src/openral_sim/policies/internvla_n1.py`
 _InternVLA-N1 / DualVLN vision-language **navigation** policy adapter (InternRobotics, arXiv:2512.08186; weights CC-BY-NC-SA-4.0, code MIT). Proxies `tools/internvla_n1_sidecar.py` over the shared `SidecarClient`; the 8.3B dual-system model (Qwen2.5-VL-7B System-2 + NextDiT System-1) runs in an auto-provisioned py3.11 venv (upstream pins transformers 4.51). `step(observation, instruction)` takes `observation["images"][cam]` (RGB uint8), obtains metric depth from the DA3 sidecar (`_da3`, monocular — no robot depth sensor), sends both to the sidecar's `step` endpoint, and maps the returned `twist=[v_forward, w_yaw]` into a 6-D `BODY_TWIST` row `[vx,0,0,0,0,wz]`. Latches on the model's STOP (returns zero twist, stops calling the sidecar until `reset()`). **Depth note:** the DualVLN checkpoint's `nextdit_async` System-1 is RGB+latent conditioned and does not consume depth (verified against the model source), so `OPENRAL_INTERNVLA_N1_DEPTH=none` sends a unit-depth placeholder for it; a depth-consuming `navdp` checkpoint keeps the default `da3`._

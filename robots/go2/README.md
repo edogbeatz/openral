@@ -31,8 +31,8 @@ The bench is the right tool for verifying:
 - lifecycle wiring (`connect → read_state → send_action → estop`),
 - joint indexing and ordering (FL, FR, RL, RR × hip / thigh / calf),
 - `RobotDescription` round-trip,
-- the generic camera rig splicing the front RGB and third-person `top`
-  cameras into the bare MJCF.
+- the generic camera rig splicing third-person `top` into the bare MJCF
+  (`front` is declared, `sim_render: false` — no EGL).
 
 The walk scene is the right tool for a locomotion policy. ACM pairs on
 that scene are **stand-justified, not gait-swept** — a genuine
@@ -47,7 +47,7 @@ containment until a real HAL lands.
 | `embodiment_kind` | `quadruped` |
 | Joints | 12 actuated (4 × hip / thigh / calf). The MJCF's free joint is implicit world state and is NOT enumerated in `joints`. |
 | End-effectors | none |
-| Sensors | spliced front RGB (`front` → `observation.images.front`) plus viz-only `top` (3/4 overview; no VLA key). Hardware radar / Edu extras are **not** declared. |
+| Sensors | `front` declared (`observation.images.front`, `sim_render: false` — no EGL) plus viz-only `top` (3/4 overview; the live twin). Hardware radar / Edu extras are **not** declared. |
 | Embodiment tags | `go2`, `unitree_go2`, `quadruped` |
 | Supported VLA embodiments | `go2` |
 | Supported control modes | `joint_position` (no `body_twist` this spike) |
@@ -96,8 +96,10 @@ The menagerie MJCF uses torque `<motor>` actuators. `Go2MujocoHAL`
 runs a software PD loop every `mj_step` (same as `H1MujocoHAL`) so
 the public contract stays position targets in radians. Hub
 `deploy.yaml` PD (`stiffness` 20/20/40, `damping` 1/1/2) is **not**
-applied — HAL `kp` saturates `ctrlrange` at 1 rad error (`kv = 0.05 * kp`)
-so estop / home holds stay conservative. Documented intentional delta.
+the walk default — HAL `kp` saturates `ctrlrange` at 1 rad error
+(`kv = 0.05 * kp`) so estop / home holds stay conservative. A hop-stand
+`ResetToPose` sits the feet on z=0 and **keeps** walk PD. Isaac hop
+`kp=20 kd=0.5` sags the calves on these torque motors.
 
 ## Detect & deploy
 
@@ -111,6 +113,8 @@ openral doctor
 openral deploy sim --config scenes/deploy/go2_bench.yaml
 # gravity on + rsl-rl ONNX (see the scene header for the ExecuteRskill goal):
 openral deploy sim --config scenes/deploy/go2_walk.yaml --dashboard --foxglove
+# laptop kinematic MuJoCo window (qpos, not cricket EGL pixels):
+openral viz mujoco --dashboard http://127.0.0.1:4318
 ```
 
 `--dry-run` resolves the HAL registry + `hal_mode=sim` without
@@ -128,6 +132,7 @@ bringing up ROS. Gravity is pinned off in this manifest's
 | Deploy bench (gravity off) | [`scenes/deploy/go2_bench.yaml`](../../scenes/deploy/go2_bench.yaml) |
 | Deploy walk (gravity on) | [`scenes/deploy/go2_walk.yaml`](../../scenes/deploy/go2_walk.yaml) |
 | Locomotion rSkill | [`rskills/rsl-rl-onnx-go2-velocity-flat`](../../rskills/rsl-rl-onnx-go2-velocity-flat/) |
+| Hop rSkill | [`rskills/rsl-rl-onnx-go2-spring-jump`](../../rskills/rsl-rl-onnx-go2-spring-jump/) (gym spring_jump ONNX; feet leave the floor higher than the scripted bounce). Apply sits the spring-jump stand on z=0 and keeps walk PD. The mjlab ONNX ([`rsl-rl-onnx-go2-hop-flat`](../../rskills/rsl-rl-onnx-go2-hop-flat/)) only crouches on this HAL. Scripted [`rskill-zero-go2-hop-fp32`](../../rskills/rskill-zero-go2-hop-fp32/) stays as fallback. |
 | Composite sibling | [`robots/go2_z1/`](../go2_z1/) |
 | ROS lifecycle node | `packages/openral_hal_go2` (also hosts `robots/go2_z1`) |
 | Sim test | `tests/sim/test_go2_hal_mujoco.py` |

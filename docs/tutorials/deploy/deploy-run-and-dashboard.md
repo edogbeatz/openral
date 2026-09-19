@@ -431,6 +431,11 @@ stream — the most recent `rskill.execute`, `skill.chunk_inference`, and
 event log. Operator discovery / write endpoints still exist for explicit tooling
 flows, but they are kept off the main dashboard surface.
 
+**Agents:** when asked to start the app / dashboard / cricket, run
+`just dashboard` (or `.agents/skills/go2-foxglove-view/scripts/start-app.sh`)
+this turn — do not print the command and wait. See
+[dashboard quickstart](../../quickstart/dashboard.md#agents-start-it-when-asked).
+
 ```
 http://localhost:4318
 ```

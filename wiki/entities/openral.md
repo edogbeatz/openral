@@ -1,7 +1,7 @@
 ---
 type: entity
 tags: [openral, architecture, harness, layers]
-updated: 2026-09-16
+updated: 2026-09-19
 ---
 
 # OpenRAL
@@ -66,7 +66,14 @@ validates against (from [[sources/repo-map]]).
 ## Live surfaces
 
 `openral deploy sim` can raise a dashboard and a Foxglove bridge, both
-view-only — see [[concepts/deploy-sim-visualization]]. First robot with
-a full sim visualization story is [[entities/go2]].
+view-only — see [[concepts/deploy-sim-visualization]]. **Agents: when
+asked to start the app, run `just dashboard` / `scripts/start-app.sh`
+this turn** (do not print and wait). First robot with a full sim
+visualization story is [[entities/go2]].
 
-Related: [[concepts/second-brain]], [[entities/openral-foxglove-bringup]].
+Related: [[concepts/second-brain]], [[entities/openral-foxglove-bringup]],
+[[entities/acquire]] (install-on-the-fly product on top of this harness;
+backstory [[analyses/creating-acquire]]). rSkills wrap third-party
+weights rather than owning them
+([[analyses/wrapping-third-party-weights]]). Opt-in S2 judgment sidecar
+(not an rSkill): [[analyses/typesafe-in-openral]].

@@ -1,0 +1,685 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:is(.dark *));
+@custom-variant fine-pointer (@media (pointer: fine));
+
+@theme inline {
+  /* Surfaces & text */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* Semantic state */
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-premium: var(--premium);
+  --color-premium-foreground: var(--premium-foreground);
+  --color-danger: var(--danger);
+  --color-danger-foreground: var(--danger-foreground);
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+
+  /* Brand accents */
+  --color-btc-orange: var(--btc-orange);
+  --color-eth-blue: var(--eth-blue);
+  --color-chart-label: var(--chart-label);
+
+  /* Chart palette */
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  /* Sidebar */
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* Overlays & specialized surfaces */
+  --color-overlay: var(--overlay);
+  --color-qr-surface: var(--qr-surface);
+  --color-qr-ink: var(--qr-ink);
+  --color-code: var(--code);
+  --color-code-foreground: var(--code-foreground);
+  --color-code-muted: var(--code-muted);
+  --color-on-chroma: var(--on-chroma);
+
+  /* Fonts */
+  --font-sans:
+    var(--font-geist-sans), 'Geist', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), 'Geist Mono', ui-monospace, monospace;
+
+  /* Radii — industrial HMI is square. Camera inner ticks are `.hmi-tick`. */
+  --radius-xs: 0;
+  --radius-sm: 0;
+  --radius-md: 0;
+  --radius-lg: 0;
+  --radius-xl: 0;
+  --radius-2xl: 0;
+  --radius-3xl: 0;
+  --radius-4xl: 0;
+  --radius-full: 0;
+
+  /* Motion — easings (auto-generate `ease-*` utilities) */
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-emphasized: cubic-bezier(0.2, 0, 0, 1);
+  --ease-spring: cubic-bezier(0.5, 1.6, 0.4, 1);
+
+  /* Motion — durations. `--transition-duration-*` generates `duration-fast`
+     etc. `--duration-*` is the same scale for `var()` / inline CSS. */
+  --duration-instant: 75ms;
+  --duration-fast: 150ms;
+  --duration-base: 200ms;
+  --duration-slow: 300ms;
+  --duration-slower: 500ms;
+  --transition-duration-instant: var(--duration-instant);
+  --transition-duration-fast: var(--duration-fast);
+  --transition-duration-base: var(--duration-base);
+  --transition-duration-slow: var(--duration-slow);
+  --transition-duration-slower: var(--duration-slower);
+
+  /* Motion — hover / press property list. Consumed by `@utility transition-fast`. */
+  --transition-fast:
+    color, background-color, border-color, outline-color, text-decoration-color,
+    fill, stroke, opacity, box-shadow, transform, translate, scale;
+
+  /* Motion — defaults applied to every `transition-*` utility so the design
+     system's voice carries even when authors don't pass an easing/duration. */
+  --default-transition-duration: var(--duration-fast);
+  --default-transition-timing-function: var(--ease-out-quart);
+
+  /* Elevation — theme-aware shadow shapes composed from --shadow-color.
+     Shape stays constant across themes; only the source color flips. */
+  --shadow-2xs: 0 1px var(--shadow-color);
+  --shadow-xs: 0 1px 2px 0 var(--shadow-color);
+  --shadow-sm:
+    0 1px 3px 0 var(--shadow-color), 0 1px 2px -1px var(--shadow-color);
+  --shadow-md:
+    0 4px 6px -1px var(--shadow-color), 0 2px 4px -2px var(--shadow-color);
+  --shadow-lg:
+    0 10px 15px -3px var(--shadow-color), 0 4px 6px -4px var(--shadow-color);
+  --shadow-xl:
+    0 20px 25px -5px var(--shadow-color), 0 8px 10px -6px var(--shadow-color);
+  --shadow-2xl: 0 25px 50px -12px var(--shadow-color);
+}
+
+@utility transition-fast {
+  transition-property: var(--transition-fast);
+  transition-duration: var(--duration-fast);
+  transition-timing-function: var(--ease-out-quart);
+}
+
+/* Opposite-corner 45° chamfer. Kept as a utility; /simple only uses
+   camera inner ticks (`.hmi-tick`), not this clip-path on buttons. */
+@utility cut {
+  --cut: 10px;
+  clip-path: polygon(
+    var(--cut) 0,
+    100% 0,
+    100% calc(100% - var(--cut)),
+    calc(100% - var(--cut)) 100%,
+    0 100%,
+    0 var(--cut)
+  );
+}
+
+@utility cut-sm {
+  --cut: 6px;
+}
+
+@utility cut-lg {
+  --cut: 14px;
+}
+
+:root {
+  --radius: 0;
+
+  /*
+   * Primitive palette — Family-adjacent surfaces (warm paper, ink, charcoal
+   * trays) with Zappi hex for chroma. Blues are not family.co codes.
+   * Semantics below reference these or a text-safe OKLCH of the same hue
+   * (raw green/gold/sky fail AA as body text on light surfaces).
+   */
+  --palette-ink: #343433;
+  --palette-ink-deep: #121212;
+  --palette-void: #0a0a0a;
+  --palette-body: #4a443f;
+  --palette-beige: #fbfaf9;
+  --palette-cream: #f6f4ef;
+  --palette-paper: #f2f0ed;
+  --palette-white: #ffffff;
+  --palette-border: #e8e8e8;
+  --palette-charcoal: #171717;
+  --palette-inverse: #f5f4f2;
+  --palette-raise: #222221;
+  --palette-well: #2a2a28;
+  --palette-hover: #2f2f2d;
+  --palette-line: #333332;
+  --palette-muted-fg: #686563;
+  --palette-muted-fg-dark: #a19e9b;
+  --palette-sky: #0e7ae0;
+  --palette-anchor: #6b7ef0;
+  --palette-cobalt: #585acc;
+  --palette-blue: #2f6ec8;
+  --palette-green: #00c454;
+  --palette-gold: #ca9218;
+  --palette-yellow: #f6c30f;
+  --palette-coral: #ff5308;
+  --palette-red: #fa979d;
+  --palette-pink: #f966ac;
+
+  /* Light — warm paper, ink controls. Primary is Family --color-primary. */
+  --background: var(--palette-beige);
+  --foreground: var(--palette-ink);
+  --card: var(--palette-white);
+  --card-foreground: var(--palette-ink);
+  --popover: var(--palette-white);
+  --popover-foreground: var(--palette-ink);
+  --primary: var(--palette-ink);
+  --primary-foreground: var(--palette-white);
+  --secondary: var(--palette-paper);
+  --secondary-foreground: var(--palette-ink);
+  --muted: var(--palette-paper);
+  --muted-foreground: var(--palette-muted-fg);
+  --accent: var(--palette-paper);
+  --accent-foreground: var(--palette-ink);
+  --border: var(--palette-border);
+  --input: var(--palette-border);
+  --ring: var(--palette-sky);
+
+  /* Semantic state — Family hues, lightness chosen for text + solid fills. */
+  --success: oklch(0.493 0.146 147.2);
+  --success-foreground: var(--palette-white);
+  --warning: oklch(0.512 0.109 73);
+  --warning-foreground: var(--palette-white);
+  --info: oklch(0.509 0.16 278);
+  --info-foreground: var(--palette-white);
+  --premium: var(--palette-gold);
+  --premium-foreground: var(--palette-white);
+  --danger: oklch(0.555 0.14 16);
+  --danger-foreground: var(--palette-white);
+  --brand: var(--palette-cobalt);
+  --brand-foreground: var(--palette-white);
+
+  /* shadcn destructive aliased to brand danger so primitives stay in sync */
+  --destructive: var(--danger);
+  --destructive-foreground: var(--danger-foreground);
+
+  /* Chain / chart accents — Family coral + sky, not the old casino ramp. */
+  --btc-orange: var(--palette-coral);
+  --eth-blue: var(--palette-sky);
+  --chart-label: var(--palette-ink);
+
+  --chart-1: var(--palette-sky);
+  --chart-2: var(--palette-green);
+  --chart-3: var(--palette-coral);
+  --chart-4: var(--palette-gold);
+  --chart-5: var(--palette-pink);
+
+  /* Sidebar aliases — no separate rail palette; reuse page tokens. */
+  --sidebar: var(--background);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--muted);
+  --sidebar-accent-foreground: var(--foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+
+  /* Native UA chrome (scrollbars, form controls, autofill) follows theme. */
+  color-scheme: light;
+
+  /* Elevation — warm ink at low opacity. Opacity is baked in so the
+     shadow shapes in @theme stay simple. */
+  --shadow-color: oklch(0.325 0.002 106.5 / 0.06);
+
+  /* Modal / drawer scrim — single token so overlays don't hardcode black/50. */
+  --overlay: oklch(0.182 0 0 / 0.4);
+
+  /* QR deposit codes — always high-contrast for wallet cameras (not theme-flipped). */
+  --qr-surface: var(--palette-white);
+  --qr-ink: var(--palette-ink-deep);
+
+  /* Snippet / terminal wells — stay dark in both themes, like a code editor. */
+  --code: var(--palette-void);
+  --code-foreground: var(--palette-inverse);
+  --code-muted: var(--palette-muted-fg-dark);
+
+  /* Legible label on saturated semantic fills. */
+  --on-chroma: var(--palette-white);
+
+  /*
+   * Visual viewport polyfill for overlay IME (iOS ignores
+   * interactive-widget=resizes-content). JS in
+   * `useVisualViewportCssVars` overwrites these with px while the
+   * keyboard is open. Do not use them to translateY a drawer.
+   */
+  --visual-viewport-height: 100dvh;
+  --visual-viewport-offset-top: 0px;
+  --keyboard-inset: 0px;
+
+  /*
+   * Responsive panel viewport caps (unitless % × dvh).
+   * Tune these to resize drawers/modals without touching component code.
+   */
+  --responsive-panel-drawer-height-pct: 96;
+  /* Task dialogs hug content until this cap, then the body scrolls. */
+  --responsive-panel-dialog-height-pct: 90;
+  /* Max viewport share for cashier — surface hugs content until this cap. */
+  --cashier-panel-height-pct: 85;
+}
+
+.dark {
+  /* Dark — Family tray charcoal, not true-black neon. Primary inverts to
+     warm paper so CTAs stay ink-on-light / light-on-ink. */
+  --background: var(--palette-charcoal);
+  --foreground: var(--palette-inverse);
+  --card: var(--palette-raise);
+  --card-foreground: var(--palette-inverse);
+  --popover: var(--palette-raise);
+  --popover-foreground: var(--palette-inverse);
+  --primary: var(--palette-inverse);
+  --primary-foreground: var(--palette-ink);
+  --secondary: var(--palette-well);
+  --secondary-foreground: var(--palette-inverse);
+  --muted: var(--palette-well);
+  --muted-foreground: var(--palette-muted-fg-dark);
+  --accent: var(--palette-hover);
+  --accent-foreground: var(--palette-inverse);
+  --border: var(--palette-line);
+  --input: var(--palette-line);
+  --ring: var(--palette-sky);
+
+  /* Bright Family chroma — readable on charcoal; ink sits on the fill. */
+  --success: var(--palette-green);
+  --success-foreground: var(--palette-charcoal);
+  --warning: var(--palette-yellow);
+  --warning-foreground: var(--palette-ink);
+  --info: var(--palette-sky);
+  --info-foreground: var(--palette-charcoal);
+  --premium: var(--palette-gold);
+  --premium-foreground: var(--palette-ink);
+  --danger: var(--palette-red);
+  --danger-foreground: var(--palette-charcoal);
+  --brand: var(--palette-cobalt);
+  --brand-foreground: var(--palette-white);
+
+  --destructive: var(--danger);
+  --destructive-foreground: var(--danger-foreground);
+
+  --btc-orange: var(--palette-coral);
+  --eth-blue: var(--palette-sky);
+  --chart-label: var(--palette-inverse);
+
+  --chart-1: var(--palette-sky);
+  --chart-2: var(--palette-green);
+  --chart-3: var(--palette-coral);
+  --chart-4: var(--palette-yellow);
+  --chart-5: var(--palette-pink);
+
+  /* Sidebar aliases — no separate rail palette; reuse page tokens. */
+  --sidebar: var(--background);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--muted);
+  --sidebar-accent-foreground: var(--foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+
+  color-scheme: dark;
+
+  --shadow-color: oklch(0 0 0 / 0.35);
+
+  --overlay: oklch(0 0 0 / 0.5);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+
+  button,
+  [role='button'],
+  [role='menuitem'],
+  [role='option'],
+  a[href],
+  summary {
+    cursor: pointer;
+  }
+}
+
+/*
+ * iOS Safari zooms the visual viewport when a focused form control's
+ * computed font-size is below 16px. Floor text inputs on touch devices
+ * so focus never zooms. Pinch-zoom stays enabled (do not set
+ * maximum-scale / user-scalable=no).
+ */
+@media (pointer: coarse) {
+  :is(input, textarea, select):not(
+    [type='checkbox'],
+    [type='radio'],
+    [type='range'],
+    [type='button'],
+    [type='submit'],
+    [type='reset'],
+    [type='hidden'],
+    [type='file'],
+    [type='image'],
+    [type='color']
+  ) {
+    font-size: 16px !important;
+  }
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Scroll fade — gradient mask that hints at off-edge content on a
+   scrollable container. Pair with the `useScrollFadeMask` hook, which
+   flips `data-can-scroll-up` / `data-can-scroll-down` based on
+   `scrollTop` and `scrollHeight`. Defaults to opaque on both edges so
+   non-overflowing content renders unchanged. */
+.scroll-fade-y {
+  --scroll-fade-top: #000;
+  --scroll-fade-bottom: #000;
+  --scroll-fade-size: 1.5rem;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    var(--scroll-fade-top) 0,
+    #000 var(--scroll-fade-size),
+    #000 calc(100% - var(--scroll-fade-size)),
+    var(--scroll-fade-bottom) 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    var(--scroll-fade-top) 0,
+    #000 var(--scroll-fade-size),
+    #000 calc(100% - var(--scroll-fade-size)),
+    var(--scroll-fade-bottom) 100%
+  );
+}
+.scroll-fade-y[data-can-scroll-up='true'] {
+  --scroll-fade-top: transparent;
+}
+.scroll-fade-y[data-can-scroll-down='true'] {
+  --scroll-fade-bottom: transparent;
+}
+
+/* Safe area utilities for mobile devices */
+.pt-safe {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.pl-safe {
+  padding-left: env(safe-area-inset-left, 0px);
+}
+.pr-safe {
+  padding-right: env(safe-area-inset-right, 0px);
+}
+
+.conn-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted-foreground);
+  transition:
+    background var(--duration-fast),
+    box-shadow var(--duration-fast);
+}
+
+.conn[data-kind='wait'] .conn-dot {
+  background: var(--brand);
+  animation: conn-blink 1.4s infinite;
+}
+
+.conn[data-kind='live'] .conn-dot {
+  background: var(--success);
+}
+
+.conn[data-kind='stale'] .conn-dot {
+  background: var(--warning);
+}
+
+.conn[data-kind='dead'] .conn-dot {
+  background: var(--danger);
+}
+
+@keyframes conn-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* Magic UI AnimatedShinyText (MIT) — waiting copy only, not camera fill. */
+@keyframes text-shimmer {
+  0%,
+  90%,
+  100% {
+    background-position: calc(-100% - var(--shiny-width)) 0;
+  }
+  30%,
+  60% {
+    background-position: calc(100% + var(--shiny-width)) 0;
+  }
+}
+
+.text-shimmer {
+  --shiny-width: 5rem;
+  color: color-mix(in oklch, var(--muted-foreground) 72%, transparent);
+  background-image: linear-gradient(
+    to right,
+    transparent,
+    var(--foreground) 50%,
+    transparent
+  );
+  background-size: var(--shiny-width) 100%;
+  background-repeat: no-repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: text-shimmer 1.8s infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .text-shimmer {
+    animation: none;
+    color: var(--muted-foreground);
+    background-image: none;
+    -webkit-background-clip: unset;
+    background-clip: unset;
+  }
+}
+
+.camera {
+  position: relative;
+  overflow: hidden;
+  min-height: 12rem;
+  background: var(--muted);
+  --hmi-inset: 20px;
+  --hmi-tick-size: 14px;
+  --hmi-gap: 8px;
+}
+
+.hmi-tick {
+  position: absolute;
+  z-index: 11;
+  width: var(--hmi-tick-size);
+  height: var(--hmi-tick-size);
+  pointer-events: none;
+  border-color: var(--foreground);
+}
+
+.hmi-tick-tl {
+  top: var(--hmi-inset);
+  left: var(--hmi-inset);
+  border-top: 2px solid;
+  border-left: 2px solid;
+}
+
+.hmi-tick-tr {
+  top: var(--hmi-inset);
+  right: var(--hmi-inset);
+  border-top: 2px solid;
+  border-right: 2px solid;
+}
+
+.hmi-tick-bl {
+  bottom: var(--hmi-inset);
+  left: var(--hmi-inset);
+  border-bottom: 2px solid;
+  border-left: 2px solid;
+}
+
+.hmi-tick-br {
+  right: var(--hmi-inset);
+  bottom: var(--hmi-inset);
+  border-right: 2px solid;
+  border-bottom: 2px solid;
+}
+
+.hmi-mark {
+  position: absolute;
+  z-index: 10;
+  background: transparent;
+  color: #fff;
+  padding-block: 0.125rem;
+  padding-inline: 0.375rem;
+}
+
+.hmi-mark > [aria-hidden="true"] {
+  color: #fff;
+}
+
+.hmi-mark-tl {
+  top: calc(var(--hmi-inset) + var(--hmi-gap));
+  left: calc(var(--hmi-inset) + var(--hmi-tick-size) + var(--hmi-gap));
+}
+
+.hmi-mark-br {
+  right: calc(var(--hmi-inset) + var(--hmi-tick-size) + var(--hmi-gap));
+  bottom: calc(var(--hmi-inset) + var(--hmi-gap));
+}
+
+.camera-still,
+.camera-stream {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+canvas.camera-stream {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: transparent;
+}
+
+.camera-still {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.camera-stream {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: transparent;
+}
+
+.camera.has-mjpeg .camera-still {
+  display: none;
+}
+
+.camera-placeholder {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  opacity: 0.55;
+}
+
+/* Canvas is always in the DOM — do not hide connecting for that.
+   Wait for a still (`img[src]`) or a painted MJPEG (`has-mjpeg`). */
+.camera.has-mjpeg .camera-placeholder,
+.camera:has(img[src]):not(.has-no-signal) .camera-placeholder {
+  display: none;
+}
+
+.camera.has-no-signal .camera-placeholder {
+  display: flex;
+}
+
+#go2-chat form {
+  display: flex;
+  min-width: 0;
+  width: 100%;
+}
+
+#go2-chat-input {
+  flex: 1 1 0%;
+  min-width: 0;
+  width: 0;
+  max-width: 100%;
+  field-sizing: fixed;
+}
+
+#go2-chat-send {
+  position: static;
+  flex-shrink: 0;
+}

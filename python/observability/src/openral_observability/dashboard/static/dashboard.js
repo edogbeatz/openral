@@ -445,10 +445,10 @@
 
   const shortId = (s) => { const p = String(s).split("/"); return p[p.length - 1]; };
 
-  // Go2 HAL camera keys (same names Foxglove/HAL publish). Always mounted so
-  // WAITING still shows two labeled panels instead of an empty grid.
+  // Go2 HAL camera key the page always mounts. ``front`` is declared for
+  // VLA matching but not rendered (sim_render false) — a second EGL
+  // readback on the walk thread. ``top`` is the 3/4 twin.
   const HERO_CAMERAS = [
-    { name: "front", role: "main", label: "Main · front" },
     { name: "top", role: "side", label: "Side · top" },
   ];
   const HERO_NAMES = HERO_CAMERAS.map((h) => h.name);
@@ -459,14 +459,18 @@
   }
 
   function cricketCameraFallbackUrl(name, currentSrc) {
-    // Laptop :4318 often 404s /api/camera until this process is restarted
-    // (or has no local OTLP). Cricket's dashboard is tunneled at :14318.
-    // Same-origin already-cricket URLs must not retry themselves.
+    // Laptop :4318 used to 404 /api/camera (empty collector) while cricket
+    // was on :14318. Operator tunnels now put cricket on :4318; :14318 is
+    // often closed. Never bounce a same-origin MJPEG there — multipart
+    // streams fire spurious `error` and a dead :14318 leaves black tiles.
     const src = String(currentSrc || "");
     if (src.indexOf("127.0.0.1:14318") !== -1 || src.indexOf("localhost:14318") !== -1) {
       return null;
     }
-    if (location.port === "14318") return null;
+    if (location.port === "14318" || location.port === "4318") return null;
+    if (src.startsWith("/api/camera/") || src.indexOf(location.host + "/api/camera/") !== -1) {
+      return null;
+    }
     return "http://127.0.0.1:14318/api/camera/" + encodeURIComponent(name) + "/stream";
   }
 
@@ -488,7 +492,54 @@
   // rebuilt: recreating the <img> would restart its MJPEG stream on every SSE
   // tick, and the overlay needs the loaded image's natural size to map source
   // pixels onto a `cover`-cropped tile.
-  const camTiles = new Map();
+    const camTiles = new Map();
+    // MJPEG <img> often never decodes a standing-robot stream (one part, no
+    // next --boundary). Paint stills on a *sibling* until the multipart
+    // stream has pixels — never replace the stream <img> src (that abort
+    // is what turned Bare Go2 tiles into a 3 fps slideshow).
+    const stillLoops = new Map();
+
+    function mjpegHasPixels(img) {
+      const src = String((img && (img.currentSrc || img.src)) || "");
+      return !!(img && img.naturalWidth > 0 && src.indexOf("/stream") !== -1);
+    }
+
+    function stopCameraStills(name, div) {
+      const handle = stillLoops.get(name);
+      if (handle) window.clearInterval(handle);
+      stillLoops.delete(name);
+      if (div) div.classList.add("has-mjpeg");
+    }
+
+    function ensureCameraPixels(name, img, still, div) {
+      if (!img || stillLoops.has(name)) return;
+      const kick = () => {
+        if (mjpegHasPixels(img)) {
+          stopCameraStills(name, div);
+          return;
+        }
+        fetch("/api/camera/" + encodeURIComponent(name) + "/latest.jpg?t=" + Date.now(), {
+          cache: "no-store",
+        })
+          .then((r) => (r.ok ? r.blob() : Promise.reject(r.status)))
+          .then((blob) => {
+            if (mjpegHasPixels(img)) {
+              stopCameraStills(name, div);
+              return;
+            }
+            if (!still) return;
+            const prev = still.dataset.stillUrl;
+            const url = URL.createObjectURL(blob);
+            still.hidden = false;
+            still.src = url;
+            still.dataset.stillUrl = url;
+            if (prev) URL.revokeObjectURL(prev);
+          })
+          .catch(() => undefined);
+      };
+      window.setTimeout(kick, 200);
+      stillLoops.set(name, window.setInterval(kick, 1500));
+    }
 
   function renderPerception(perc) {
     const el = $("cameras");
@@ -504,6 +555,9 @@
         if (!keep.has(name)) {
           tile.root.remove();
           camTiles.delete(name);
+          const handle = stillLoops.get(name);
+          if (handle) window.clearInterval(handle);
+          stillLoops.delete(name);
         }
       }
       for (const name of names) {
@@ -521,10 +575,12 @@
   }
 
   function bindCameraTile(div, name, cam) {
-    const img = div.querySelector("img");
+    const img = div.querySelector("img.camera-stream") || div.querySelector("img");
+    const still = div.querySelector("img.camera-still");
     const tile = {
       root: div,
       img,
+      still,
       canvas: div.querySelector("canvas.overlay"),
       producers: div.querySelector(".overlay-src"),
       livePill: div.querySelector(".live-pill"),
@@ -544,16 +600,30 @@
       // is enough to drop the opaque placeholder; telemetry `hasFrame` also
       // re-adds the class in updateCameraTile.
       if (img.getAttribute("src")) div.classList.add("is-streaming");
-      img.addEventListener("load", () => div.classList.add("is-streaming"));
+      img.addEventListener("load", () => {
+        div.classList.add("is-streaming");
+        if (mjpegHasPixels(img)) stopCameraStills(name, div);
+      });
       img.addEventListener("error", () => {
-        div.classList.remove("is-streaming");
+        // Keep the opaque placeholder hidden — uncovering it on a transient
+        // MJPEG error is how tiles stuck on "waiting for camera".
+        div.classList.add("is-streaming");
+        // Multipart <img> fires spurious error. Remounting a live stream
+        // aborts the connection and is the 3 fps slideshow.
+        if (mjpegHasPixels(img)) return;
         const fallback = cricketCameraFallbackUrl(name, img.src);
         if (fallback) {
           img.src = fallback;
-          div.classList.add("is-streaming");
+          return;
         }
+        const base = "/api/camera/" + encodeURIComponent(name) + "/stream";
+        img.src = base + "?r=" + Date.now();
       });
-      if (img.complete && img.naturalWidth > 0) div.classList.add("is-streaming");
+      if (img.complete && img.naturalWidth > 0) {
+        div.classList.add("is-streaming");
+        if (mjpegHasPixels(img)) stopCameraStills(name, div);
+      }
+      ensureCameraPixels(name, img, still, div);
     }
     return tile;
   }
@@ -567,7 +637,8 @@
     div.dataset.role = role;
     div.innerHTML = `
       <div class="image-wrap">
-        <img alt="${label}" />
+        <img class="camera-stream" alt="${label}" />
+        <img class="camera-still" alt="" hidden />
         <div class="camera-placeholder">waiting for camera</div>
         <canvas class="overlay"></canvas>
         <span class="corner tl"></span><span class="corner tr"></span>
@@ -1893,8 +1964,12 @@
     if (apply) apply.classList.toggle("next", phase === "need_skill");
 
     if (phase === "choose") {
-      if (step) step.textContent = "1 · Choose robot";
-      if (hint) hint.textContent = "Choose Bare Go2 or Go2 + Z1";
+      if (step) step.textContent = "1 · Load the unit";
+      if (hint) {
+        hint.textContent = robot
+          ? `${name} is the live twin. Pick the other to cold-reload.`
+          : "Nothing is loaded. Pick Bare Go2 or Go2 + Z1";
+      }
     } else if (phase === "loading") {
       if (step) step.textContent = "1 · Loading…";
       if (hint) hint.textContent = `Loading ${name} (~30-90s)`;
@@ -1942,8 +2017,12 @@
     const runCard = $("card-runskill");
     if (runCard) runCard.hidden = true;
     const rid = String((cfg && cfg.robot_id) || "");
-    if (rid && !demoRobot()) sessionStorage.setItem(DEMO_ROBOT_KEY, rid);
     const phase = demoPhase();
+    if (rid === "go2" || rid === "go2_z1") {
+      sessionStorage.setItem(DEMO_ROBOT_KEY, rid);
+    } else if (phase !== "loading") {
+      sessionStorage.removeItem(DEMO_ROBOT_KEY);
+    }
     // Bare Go2 (resume=stand): after a load, auto-stand once healthz is back.
     // Armed Go2+Z1: do not auto-calibrate — Recalibrate is the next action.
     // Never auto-walk.
@@ -2068,6 +2147,19 @@
       const opt = sel && sel.options[sel.selectedIndex];
       const label = (opt && opt.text) || skillId;
       setDemoStatus("applying " + label + "…", "");
+      // A second Apply used to queue behind the first 60 s walk (or reuse a
+      // resident skill that never episode-reset) — the dog stood still.
+      if (phase === "ready") {
+        setDemoStatus("switching skill — stopping the current one…", "");
+        const stopped = await demoPost("/api/demo/stop");
+        if (!stopped.resp.ok || !stopped.data.accepted) {
+          setDemoStatus(
+            stopped.data.error || stopped.data.detail || ("stop failed — HTTP " + stopped.resp.status),
+            "err"
+          );
+          return;
+        }
+      }
       let resp, data;
       if (isWalkSkillId(skillId)) {
         ({ resp, data } = await demoPost("/api/demo/walk", { skill_id: skillId }));
@@ -2120,23 +2212,25 @@
           "ok"
         );
         let tries = 0;
-        let sawDown = false;
+        let sawGap = false;
         const DEMO_RELOAD_POLL_MS = 2000;
         const DEMO_RELOAD_MAX_TRIES = 90; // 180s — HAL+foxglove after a hard kill
         const poll = setInterval(async () => {
           tries += 1;
           try {
-            const h = await fetch("/healthz", { cache: "no-store" });
-            if (!h.ok) sawDown = true;
-            // Require a down-gap so a surviving old dashboard is not treated
-            // as the new twin after 8s.
-            if (h.ok && sawDown && tries > 4) {
+            const c = await fetch("/api/config", { cache: "no-store" });
+            const body = c.ok ? await c.json() : {};
+            const live = String((body && body.robot_id) || "");
+            // Laptop /healthz never drops (empty collector). Wait until the
+            // tunneled cricket identity is the preset we asked to load.
+            if (live !== preset) sawGap = true;
+            if (live === preset && (sawGap || tries > 8)) {
               clearInterval(poll);
               // Keep phase=loading so enableDemoControls can auto-stand (bare)
               // or land on need_recal (armed).
               location.reload();
             }
-          } catch (_err) { sawDown = true; }
+          } catch (_err) { sawGap = true; }
           if (tries > DEMO_RELOAD_MAX_TRIES) {
             clearInterval(poll);
             setDemoStatus("reload timed out — refresh manually", "err");
@@ -2439,11 +2533,10 @@
   }
 
   // Optional cards: hidden until their producer speaks once, then permanent.
-  // Cameras are NOT in this table — Go2 main (`front`) + side (`top`) stay
-  // mounted from first paint so WAITING is two labeled panels, not an empty
-  // grid. Other legs (SLAM / octomap / reasoner / spatial memory) still hide
-  // until they speak. Revealing is one-way on purpose.
-  //
+  // Cameras are NOT in this table — Go2 ``top`` stays mounted from first
+  // paint so WAITING is a labeled panel, not an empty grid. Other legs
+  // (SLAM / octomap / reasoner / spatial memory) still hide until they
+  // speak. Revealing is one-way on purpose.
   // Safety cards are NOT in this table either: they stay mounted from first
   // paint so a trip is never off-screen (CLAUDE.md §1.1).
   const REVEAL_ON_FEED = [
@@ -2945,11 +3038,16 @@
     return String(skillId || "").toLowerCase().replace(/-/g, "_");
   }
 
+  function isArmReadySkillId(skillId) {
+    return compactSkillId(skillId).includes("arm_ready");
+  }
+
   function isWalkSkillId(skillId) {
     const sid = String(skillId || "");
     if (!sid) return false;
-    if (WALK_SKILL_IDS.some((x) => String(x).toLowerCase() === sid.toLowerCase())) return true;
     const compact = compactSkillId(sid);
+    if (compact.includes("hop") || compact.includes("arm_ready")) return false;
+    if (WALK_SKILL_IDS.some((x) => String(x).toLowerCase() === sid.toLowerCase())) return true;
     return compact.includes("rsl_rl") && compact.includes("go2") && compact.includes("velocity");
   }
 
@@ -2981,8 +3079,9 @@
     }
     const walkId = preferWalk ? preferredWalkSkillId(offered) : "";
     // Recalibrate / demo fill must not keep a selected arm_ready hold — that
-    // made Apply re-dispatch the 2 s stand (dog does not walk).
-    if (preferWalk && walkId) selectEl.value = walkId;
+    // made Apply re-dispatch the 2 s stand (dog does not walk). Hop is a
+    // first-class skill on both twins; preferWalk must not steal it.
+    if (preferWalk && walkId && (!keep || isArmReadySkillId(keep))) selectEl.value = walkId;
     else if (offered.some((s) => s.id === keep)) selectEl.value = keep;
     else if (walkId) selectEl.value = walkId;
   }
@@ -3113,9 +3212,12 @@
     const robot = demoRobot() || runskillRobot;
     const saved = savedDemoSkill(robot);
     // Recalibrate already ran arm_ready. Restoring that hold over preferWalk
-    // made Apply re-dispatch the 2 s stand instead of rsl-rl walk.
-    const savedIsWalk = isWalkSkillId(saved);
-    if (savedIsWalk && [...sel.options].some((opt) => opt.value === saved)) {
+    // made Apply re-dispatch the 2 s stand instead of rsl-rl walk. Hop stays.
+    if (
+      saved &&
+      !isArmReadySkillId(saved) &&
+      [...sel.options].some((opt) => opt.value === saved)
+    ) {
       sel.value = saved;
     }
     if (sel.value) saveDemoSkill(robot, sel.value);
